@@ -405,6 +405,9 @@ header h1 {
 
 .btn {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: var(--grad);
   color: #fff;
   border: none;
@@ -414,6 +417,8 @@ header h1 {
   font-weight: 600;
   cursor: pointer;
   font-family: inherit;
+  text-decoration: none;
+  white-space: nowrap;
   transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
   -webkit-tap-highlight-color: transparent;
   letter-spacing: 0.01em;

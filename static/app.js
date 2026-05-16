@@ -313,7 +313,6 @@ openClaudeBtn.addEventListener("click", () => {
   const prefill = `Here's a transcript I want to discuss:\n\n${text}`;
   navigator.clipboard.writeText(prefill).catch(() => {});
   showToast("Transcript copied — paste it in Claude");
-  window.open("https://claude.ai/new", "_blank", "noopener");
 });
 
 summarizeBtn.addEventListener("click", async () => {
