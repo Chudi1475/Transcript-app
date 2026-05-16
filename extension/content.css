@@ -1,61 +1,116 @@
-#rtc-btn {
+#rtc-widget {
   position: fixed !important;
-  display: none;
+  top: 16px;
+  right: 16px;
+  z-index: 2147483647;
+  display: flex !important;
+  align-items: center;
+  width: 44px;
+  height: 44px;
+  background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%);
+  border-radius: 999px;
+  overflow: hidden;
+  transition: width 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.25s ease;
+  box-shadow: 0 6px 18px rgba(139, 92, 246, 0.5),
+              0 0 0 1px rgba(255, 255, 255, 0.08) inset;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  cursor: text;
+}
+
+#rtc-widget:hover,
+#rtc-widget:focus-within,
+#rtc-widget.rtc-open {
+  width: 360px;
+  box-shadow: 0 10px 28px rgba(139, 92, 246, 0.6),
+              0 0 0 1px rgba(255, 255, 255, 0.12) inset;
+}
+
+#rtc-widget .rtc-icon {
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+  display: flex !important;
   align-items: center;
   justify-content: center;
-  z-index: 2147483647;
-  width: 46px;
-  height: 46px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%);
   color: #fff;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  box-shadow: 0 4px 14px rgba(139, 92, 246, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.12) inset;
-  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
-  -webkit-tap-highlight-color: transparent;
-}
-
-#rtc-btn:hover {
-  transform: scale(1.08);
-  box-shadow: 0 6px 20px rgba(139, 92, 246, 0.6);
-  filter: brightness(1.05);
-}
-
-#rtc-btn:active {
-  transform: scale(0.95);
-}
-
-#rtc-btn.busy {
-  animation: rtc-pulse 1.2s ease-in-out infinite;
   pointer-events: none;
 }
 
+#rtc-widget .rtc-url {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  height: 100% !important;
+  background: transparent !important;
+  border: none !important;
+  outline: none !important;
+  color: #fff !important;
+  font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif !important;
+  padding: 0 8px 0 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  letter-spacing: 0.01em !important;
+  text-overflow: ellipsis !important;
+  width: auto !important;
+}
+
+#rtc-widget .rtc-url::placeholder {
+  color: rgba(255, 255, 255, 0.78);
+  font-weight: 500;
+}
+
+#rtc-widget .rtc-go {
+  flex: 0 0 32px !important;
+  width: 32px !important;
+  height: 32px !important;
+  margin-right: 6px !important;
+  background: rgba(255, 255, 255, 0.22) !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 999px !important;
+  cursor: pointer !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s ease, transform 0.15s ease;
+  padding: 0 !important;
+}
+
+#rtc-widget .rtc-go:hover {
+  background: rgba(255, 255, 255, 0.38) !important;
+}
+
+#rtc-widget .rtc-go:active {
+  transform: scale(0.94);
+}
+
+#rtc-widget.rtc-busy {
+  animation: rtc-pulse 1.4s ease-in-out infinite;
+}
+
 @keyframes rtc-pulse {
-  0%, 100% { box-shadow: 0 4px 14px rgba(139, 92, 246, 0.45); }
-  50%      { box-shadow: 0 4px 22px rgba(236, 72, 153, 0.85); }
+  0%, 100% { box-shadow: 0 10px 28px rgba(139, 92, 246, 0.6); }
+  50%      { box-shadow: 0 10px 36px rgba(236, 72, 153, 0.85); }
 }
 
 #rtc-status {
   position: fixed !important;
-  bottom: 32px;
-  left: 50%;
-  transform: translateX(-50%);
+  top: 72px;
+  right: 16px;
   z-index: 2147483647;
-  background: rgba(20, 20, 30, 0.96);
+  display: none;
+  background: rgba(15, 15, 25, 0.96);
   color: #fff;
-  padding: 10px 18px;
-  border-radius: 999px;
+  padding: 10px 14px;
+  border-radius: 10px;
   font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(10px);
+  max-width: 340px;
   pointer-events: none;
-  white-space: nowrap;
+  border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-#rtc-status.error {
+#rtc-status.rtc-error {
   background: rgba(220, 50, 70, 0.96);
 }

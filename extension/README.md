@@ -1,7 +1,9 @@
 # Reel to Claude — Brave/Chrome extension
 
-A floating button on Instagram that transcribes the current reel using your
-local transcript-app and opens Claude with the transcript on your clipboard.
+A small gradient pill pinned to the top-right corner of Instagram. Hover to
+expand it into a URL input, paste a reel URL, hit Enter. The local
+transcript-app transcribes it and opens Claude with the transcript on your
+clipboard.
 
 ## Requirements
 
@@ -19,24 +21,20 @@ python app.py
 3. Click **Load unpacked**.
 4. Select this `extension` folder.
 
-A purple/pink circular button appears on the reel's action sidebar,
-directly above the playback-speed (1x) icon, whenever you're viewing
-a reel.
+A small gradient circle appears at the top-right of any instagram.com page.
 
 ## Use
 
-1. Open any reel — URL looks like `https://www.instagram.com/reel/<id>/` or
-   `https://www.instagram.com/reels/<id>/`.
-2. Click the floating button.
-3. Wait a few seconds while the server downloads + transcribes the audio.
-4. claude.ai/new opens in a new tab with the transcript on your clipboard —
-   paste with `Ctrl+V`.
+1. Hover the circle in the top-right — it slides open into an input pill.
+2. Paste a reel URL into the input.
+3. Press `Enter` (or click the arrow). Wait a few seconds while it
+   downloads and transcribes.
+4. claude.ai/new opens in a new tab with the transcript on your clipboard.
+   Paste with `Ctrl+V`.
 
 ## Troubleshooting
 
 - **"Can't reach the local server"** — start `python app.py` first.
-- **"Open a reel first"** — the URL has to contain `/reel/` or `/reels/`. The
-  reels feed updates the URL as you scroll, so just scroll to a reel.
-- **Button doesn't appear** — Instagram heavily re-renders the page; reload
-  the tab. If it still doesn't show, check the extension is enabled at
-  `brave://extensions`.
+- **Pill doesn't appear** — reload the extension at `brave://extensions`
+  then refresh Instagram. Open devtools (`F12` → Console) and look for
+  `[reel-to-claude]` messages to confirm the script loaded.
