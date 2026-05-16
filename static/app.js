@@ -308,11 +308,40 @@ function showToast(msg, ms = 2200) {
   setTimeout(() => t.remove(), ms);
 }
 
-openClaudeBtn.addEventListener("click", () => {
+function isMobileDevice() {
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+}
+
+function tryOpenClaudeApp() {
+  let appOpened = false;
+  const onHide = () => { if (document.hidden) appOpened = true; };
+  document.addEventListener("visibilitychange", onHide);
+
+  const a = document.createElement("a");
+  a.href = "claude://new";
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", onHide);
+    if (!appOpened && !document.hidden) {
+      window.location.href = "https://claude.ai/new";
+    }
+  }, 1500);
+}
+
+openClaudeBtn.addEventListener("click", (e) => {
   const text = currentOutputText();
   const prefill = `Here's a transcript I want to discuss:\n\n${text}`;
   navigator.clipboard.writeText(prefill).catch(() => {});
   showToast("Transcript copied — paste it in Claude");
+
+  if (isMobileDevice()) {
+    e.preventDefault();
+    tryOpenClaudeApp();
+  }
 });
 
 summarizeBtn.addEventListener("click", async () => {
