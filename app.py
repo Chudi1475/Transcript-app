@@ -8,6 +8,10 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 if sys.platform == "win32":
     site_packages = Path(sysconfig.get_paths()["purelib"])
     for sub in ("nvidia/cublas/bin", "nvidia/cudnn/bin"):
@@ -21,6 +25,19 @@ from fastapi.staticfiles import StaticFiles
 from faster_whisper import WhisperModel
 
 import yt_dlp
+
+try:
+    from anthropic import Anthropic
+except ImportError:
+    Anthropic = None
+
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+anthropic_client = (
+    Anthropic(api_key=ANTHROPIC_API_KEY)
+    if (Anthropic and ANTHROPIC_API_KEY)
+    else None
+)
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "claude-sonnet-4-6")
 
 APP_DIR = Path(__file__).parent
 STATIC_DIR = APP_DIR / "static"
@@ -201,6 +218,39 @@ def status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@app.get("/config")
+def config():
+    return {"ai_enabled": anthropic_client is not None}
+
+
+@app.post("/summarize")
+def summarize(payload: dict = Body(...)):
+    if not anthropic_client:
+        raise HTTPException(503, "ANTHROPIC_API_KEY not configured")
+    text = (payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "No text provided")
+    instruction = (
+        payload.get("instruction")
+        or "Summarize this transcript in 2-3 sentences, then list the key points as bullets. If there are any clear action items, list them at the end under 'Action items:'. Keep it concise."
+    ).strip()
+
+    try:
+        msg = anthropic_client.messages.create(
+            model=SUMMARY_MODEL,
+            max_tokens=1024,
+            messages=[
+                {
+                    "role": "user",
+                    "content": f"{instruction}\n\nTranscript:\n{text}",
+                }
+            ],
+        )
+        return {"summary": msg.content[0].text}
+    except Exception as e:
+        raise HTTPException(500, f"Claude API error: {e}")
 
 
 @app.get("/")

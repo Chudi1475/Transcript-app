@@ -74,11 +74,22 @@
         </div>
         <div class="actions">
           <button id="toggleTimestamps" class="btn btn-ghost" type="button">Show timestamps</button>
-          <button id="copyBtn" class="btn" type="button">Copy</button>
-          <button id="downloadBtn" class="btn" type="button">Download .txt</button>
+          <button id="copyBtn" class="btn btn-ghost" type="button">Copy</button>
+          <button id="downloadBtn" class="btn btn-ghost" type="button">.txt</button>
+          <button id="downloadSrtBtn" class="btn btn-ghost" type="button">.srt</button>
+          <button id="openClaudeBtn" class="btn" type="button">Open in Claude</button>
+          <button id="summarizeBtn" class="btn hidden" type="button">Summarize</button>
         </div>
       </div>
       <div id="transcript" class="transcript"></div>
+    </section>
+
+    <section id="summary" class="summary hidden">
+      <div class="summary-header">
+        <h3>Summary</h3>
+        <button id="summaryCloseBtn" class="btn-icon" type="button" aria-label="Close">×</button>
+      </div>
+      <div id="summaryContent" class="summary-content"></div>
     </section>
 
     <section id="error" class="error hidden"></section>

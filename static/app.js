@@ -12,9 +12,15 @@ const errorEl = document.getElementById("error");
 const languageSelect = document.getElementById("language");
 const copyBtn = document.getElementById("copyBtn");
 const downloadBtn = document.getElementById("downloadBtn");
+const downloadSrtBtn = document.getElementById("downloadSrtBtn");
 const toggleTimestamps = document.getElementById("toggleTimestamps");
 const urlInput = document.getElementById("urlInput");
 const urlBtn = document.getElementById("urlBtn");
+const openClaudeBtn = document.getElementById("openClaudeBtn");
+const summarizeBtn = document.getElementById("summarizeBtn");
+const summaryEl = document.getElementById("summary");
+const summaryContent = document.getElementById("summaryContent");
+const summaryCloseBtn = document.getElementById("summaryCloseBtn");
 
 let currentSegments = [];
 let currentText = "";
@@ -239,15 +245,99 @@ copyBtn.addEventListener("click", async () => {
   }
 });
 
-downloadBtn.addEventListener("click", () => {
-  const text = currentOutputText();
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+function triggerDownload(text, ext, mime) {
+  const blob = new Blob([text], { type: `${mime};charset=utf-8` });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = currentFilename.replace(/\.[^.]+$/, "") + ".txt";
+  a.download = currentFilename.replace(/\.[^.]+$/, "") + "." + ext;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+}
+
+downloadBtn.addEventListener("click", () => {
+  triggerDownload(currentOutputText(), "txt", "text/plain");
 });
+
+function formatSrtTime(s) {
+  const total = Math.max(0, s || 0);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = Math.floor(total % 60);
+  const ms = Math.floor((total * 1000) % 1000);
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
+}
+
+function segmentsToSrt(segments) {
+  return segments
+    .map(
+      (s, i) =>
+        `${i + 1}\n${formatSrtTime(s.start)} --> ${formatSrtTime(s.end)}\n${s.text.trim()}\n`
+    )
+    .join("\n");
+}
+
+downloadSrtBtn.addEventListener("click", () => {
+  if (!currentSegments.length) return;
+  triggerDownload(segmentsToSrt(currentSegments), "srt", "application/x-subrip");
+});
+
+function showToast(msg, ms = 2200) {
+  const t = document.createElement("div");
+  t.className = "toast";
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), ms);
+}
+
+openClaudeBtn.addEventListener("click", () => {
+  const text = currentOutputText();
+  const prefill = `Here's a transcript I want to discuss:\n\n${text}`;
+  navigator.clipboard.writeText(prefill).catch(() => {});
+  showToast("Transcript copied — paste it in Claude");
+  window.open("https://claude.ai/new", "_blank", "noopener");
+});
+
+summarizeBtn.addEventListener("click", async () => {
+  if (!currentText) return;
+  show(summaryEl);
+  summaryContent.classList.add("loading");
+  summaryContent.textContent = "Asking Claude…";
+  summarizeBtn.disabled = true;
+  const orig = summarizeBtn.textContent;
+  summarizeBtn.textContent = "Thinking…";
+
+  try {
+    const res = await fetch("/summarize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: currentText }),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      summaryContent.classList.remove("loading");
+      summaryContent.textContent = "Error: " + errText;
+      return;
+    }
+    const { summary } = await res.json();
+    summaryContent.classList.remove("loading");
+    summaryContent.textContent = summary;
+  } catch (e) {
+    summaryContent.classList.remove("loading");
+    summaryContent.textContent = "Error: " + e.message;
+  } finally {
+    summarizeBtn.disabled = false;
+    summarizeBtn.textContent = orig;
+  }
+});
+
+summaryCloseBtn.addEventListener("click", () => hide(summaryEl));
+
+fetch("/config")
+  .then((r) => r.json())
+  .then((cfg) => {
+    if (cfg.ai_enabled) summarizeBtn.classList.remove("hidden");
+  })
+  .catch(() => {});
