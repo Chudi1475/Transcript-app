@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f172a" />
+  <title>Transcript</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Transcript</h1>
+      <p class="subtitle">Video &amp; audio to text. Runs locally.</p>
+    </header>
+
+    <section class="upload" id="dropzone">
+      <input type="file" id="fileInput" accept="video/*,audio/*" hidden />
+      <label for="fileInput" class="upload-label">
+        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="17 8 12 3 7 8"/>
+          <line x1="12" y1="3" x2="12" y2="15"/>
+        </svg>
+        <span class="primary">Choose a file</span>
+        <span class="secondary">or drag &amp; drop — video or audio</span>
+      </label>
+    </section>
+
+    <div class="divider"><span>or</span></div>
+
+    <section class="url-section">
+      <input type="url" id="urlInput" inputmode="url" autocomplete="off" autocapitalize="off"
+             placeholder="Paste a link — TikTok, Instagram, YouTube, X, Reddit…" />
+      <button type="button" id="urlBtn" class="btn">Transcribe link</button>
+    </section>
+
+    <section class="options">
+      <label>
+        <span>Language</span>
+        <select id="language">
+          <option value="auto">Auto-detect</option>
+          <option value="en">English</option>
+          <option value="es">Spanish</option>
+          <option value="fr">French</option>
+          <option value="de">German</option>
+          <option value="it">Italian</option>
+          <option value="pt">Portuguese</option>
+          <option value="nl">Dutch</option>
+          <option value="ru">Russian</option>
+          <option value="ja">Japanese</option>
+          <option value="ko">Korean</option>
+          <option value="zh">Chinese</option>
+          <option value="ar">Arabic</option>
+          <option value="hi">Hindi</option>
+        </select>
+      </label>
+    </section>
+
+    <section id="status" class="status hidden">
+      <div class="status-row">
+        <span id="statusLabel">Uploading…</span>
+        <span id="statusPercent">0%</span>
+      </div>
+      <div class="progress"><div id="progressBar" class="progress-bar"></div></div>
+      <div id="fileMeta" class="file-meta"></div>
+    </section>
+
+    <section id="result" class="result hidden">
+      <div class="result-header">
+        <div>
+          <h2>Transcript</h2>
+          <p id="resultMeta" class="result-meta"></p>
+        </div>
+        <div class="actions">
+          <button id="toggleTimestamps" class="btn btn-ghost" type="button">Show timestamps</button>
+          <button id="copyBtn" class="btn" type="button">Copy</button>
+          <button id="downloadBtn" class="btn" type="button">Download .txt</button>
+        </div>
+      </div>
+      <div id="transcript" class="transcript"></div>
+    </section>
+
+    <section id="error" class="error hidden"></section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>
