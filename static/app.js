@@ -385,3 +385,14 @@ fetch("/config")
     if (cfg.ai_enabled) summarizeBtn.classList.remove("hidden");
   })
   .catch(() => {});
+
+(function autoTranscribeFromQuery() {
+  const params = new URLSearchParams(location.search);
+  const autoUrl = params.get("url");
+  if (!autoUrl) return;
+  hide(inputOptions);
+  show(urlSection);
+  urlInput.value = autoUrl;
+  history.replaceState({}, "", "/");
+  handleUrl();
+})();

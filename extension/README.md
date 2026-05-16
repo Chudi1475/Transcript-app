@@ -1,9 +1,9 @@
 # Reel to Claude — Brave/Chrome extension
 
 A small gradient pill pinned to the top-right corner of Instagram. Hover to
-expand it into a URL input, paste a reel URL, hit Enter. The local
-transcript-app transcribes it and opens Claude with the transcript on your
-clipboard.
+expand it into a URL input, paste a reel URL, hit Enter. A new tab opens to
+your local transcript-app with the URL pre-loaded, and transcription starts
+automatically.
 
 ## Requirements
 
@@ -27,10 +27,10 @@ A small gradient circle appears at the top-right of any instagram.com page.
 
 1. Hover the circle in the top-right — it slides open into an input pill.
 2. Paste a reel URL into the input.
-3. Press `Enter` (or click the arrow). Wait a few seconds while it
-   downloads and transcribes.
-4. claude.ai/new opens in a new tab with the transcript on your clipboard.
-   Paste with `Ctrl+V`.
+3. Press `Enter` (or click the arrow). A new tab opens to the transcript
+   app and transcription starts immediately.
+4. Use the action buttons on the transcript page (Ask Claude / Summarize /
+   Copy / .txt / .srt) when it finishes.
 
 ## Troubleshooting
 

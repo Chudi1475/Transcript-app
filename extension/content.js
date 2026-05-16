@@ -10,6 +10,7 @@ const ARROW_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 </svg>`;
 
 const LOG = "[reel-to-claude]";
+const SERVER = "http://localhost:8000";
 
 function ensureWidget() {
   let widget = document.getElementById("rtc-widget");
@@ -48,7 +49,7 @@ function ensureWidget() {
   return widget;
 }
 
-async function handleSubmit(url, widget, input) {
+function handleSubmit(url, widget, input) {
   url = (url || "").trim();
   if (!url) {
     input.focus();
@@ -60,30 +61,15 @@ async function handleSubmit(url, widget, input) {
     return;
   }
 
-  widget.classList.add("rtc-busy", "rtc-open");
-  showStatus("Transcribing…");
+  const target = `${SERVER}/?url=${encodeURIComponent(url)}`;
+  window.open(target, "_blank", "noopener");
 
-  try {
-    const resp = await chrome.runtime.sendMessage({ type: "transcribe", url });
-    if (!resp) throw new Error("No response — is the local server running?");
-    if (resp.error) throw new Error(resp.error);
-
-    const text = resp.text || "";
-    const prefill = `Here's a transcript I want to discuss:\n\n${text}`;
-    try { await navigator.clipboard.writeText(prefill); } catch {}
-
-    showStatus("Opening Claude — paste with Ctrl+V");
-    window.open("https://claude.ai/new", "_blank", "noopener");
-    input.value = "";
-  } catch (e) {
-    showStatus("Error: " + e.message, true);
-  } finally {
-    widget.classList.remove("rtc-busy");
-    setTimeout(() => {
-      hideStatus();
-      widget.classList.remove("rtc-open");
-    }, 3500);
-  }
+  input.value = "";
+  showStatus("Opened transcript app");
+  setTimeout(() => {
+    hideStatus();
+    widget.classList.remove("rtc-open");
+  }, 1800);
 }
 
 let statusEl;
