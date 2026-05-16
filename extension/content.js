@@ -4,8 +4,11 @@ const ICON_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
   <line x1="9" y1="14" x2="13" y2="14"/>
 </svg>`;
 
+const LOG = "[reel-to-claude]";
+
 function isReelPath() {
-  return /^\/reels?\/[^/]+/.test(location.pathname);
+  const p = location.pathname;
+  return /^\/reels?\//.test(p) || /^\/p\//.test(p);
 }
 
 function getReelUrl() {
@@ -13,6 +16,7 @@ function getReelUrl() {
 }
 
 function isVisible(el) {
+  if (!el) return false;
   const r = el.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return false;
   const cx = r.left + r.width / 2;
@@ -21,29 +25,40 @@ function isVisible(el) {
 }
 
 function findPlaybackSpeed() {
-  const candidates = [];
-
   for (const el of document.querySelectorAll("[aria-label]")) {
     const lbl = (el.getAttribute("aria-label") || "").toLowerCase();
-    if (
-      lbl.includes("playback") ||
-      lbl.includes("speed") ||
-      lbl === "1x" || lbl === "1.5x" || lbl === "2x"
-    ) {
-      candidates.push(el);
+    if (lbl.includes("playback") || lbl.includes("speed") || /^\d+(\.\d+)?x$/i.test(lbl)) {
+      if (isVisible(el)) return el;
     }
   }
-
-  for (const b of document.querySelectorAll("button, [role='button']")) {
+  for (const b of document.querySelectorAll("button, [role='button'], span")) {
     const t = (b.textContent || "").trim();
-    if (/^\d+(\.\d+)?x$/i.test(t)) candidates.push(b);
+    if (/^\d+(\.\d+)?x$/i.test(t) && t.length < 6 && isVisible(b)) {
+      return b.closest("button, [role='button']") || b;
+    }
   }
+  return null;
+}
 
-  if (!candidates.length) return null;
-  for (const c of candidates) {
-    if (isVisible(c)) return c;
+const ACTION_LABELS = [
+  "Like", "Unlike", "Comment", "Share", "Save", "Remove",
+  "More options", "Audio", "Audio page", "Mute", "Unmute",
+];
+
+function findLowestActionButton() {
+  let lowest = null, lowestY = -Infinity;
+  for (const label of ACTION_LABELS) {
+    const els = document.querySelectorAll(`[aria-label="${label}"]`);
+    for (const el of els) {
+      if (!isVisible(el)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.top > lowestY && rect.right > innerWidth / 2) {
+        lowestY = rect.top;
+        lowest = el.closest("button, [role='button'], div[role='button']") || el;
+      }
+    }
   }
-  return candidates[0];
+  return lowest;
 }
 
 function getOrCreateButton() {
@@ -59,6 +74,7 @@ function getOrCreateButton() {
   btn.innerHTML = ICON_SVG;
   btn.addEventListener("click", onClick);
   document.body.appendChild(btn);
+  console.log(LOG, "button created");
   return btn;
 }
 
@@ -67,23 +83,56 @@ function hideButton() {
   if (btn) btn.style.display = "none";
 }
 
-function update() {
-  if (!isReelPath()) {
-    hideButton();
-    return;
-  }
-  const playback = findPlaybackSpeed();
-  if (!playback) {
-    hideButton();
-    return;
-  }
-
-  const btn = getOrCreateButton();
-  const rect = playback.getBoundingClientRect();
+function positionAbove(btn, target) {
+  const rect = target.getBoundingClientRect();
   const size = 46;
   btn.style.display = "flex";
   btn.style.left = `${Math.round(rect.left + rect.width / 2 - size / 2)}px`;
   btn.style.top = `${Math.round(rect.top - size - 6)}px`;
+  btn.style.right = "auto";
+  btn.style.bottom = "auto";
+}
+
+function positionCorner(btn) {
+  btn.style.display = "flex";
+  btn.style.left = "auto";
+  btn.style.top = "auto";
+  btn.style.right = "24px";
+  btn.style.bottom = "120px";
+}
+
+let lastMode = "";
+function logMode(mode, target) {
+  if (mode === lastMode) return;
+  lastMode = mode;
+  console.log(LOG, "position mode:", mode, target || "");
+}
+
+function update() {
+  if (!isReelPath()) {
+    hideButton();
+    logMode("hidden (not a reel path)");
+    return;
+  }
+
+  const btn = getOrCreateButton();
+
+  const playback = findPlaybackSpeed();
+  if (playback) {
+    positionAbove(btn, playback);
+    logMode("above-playback", playback);
+    return;
+  }
+
+  const lowest = findLowestActionButton();
+  if (lowest) {
+    positionAbove(btn, lowest);
+    logMode("above-lowest-action", lowest);
+    return;
+  }
+
+  positionCorner(btn);
+  logMode("corner-fallback");
 }
 
 let busy = false;
@@ -151,6 +200,7 @@ function schedule() {
   });
 }
 
+console.log(LOG, "content script loaded on", location.href);
 schedule();
 window.addEventListener("scroll", schedule, { passive: true, capture: true });
 window.addEventListener("resize", schedule);

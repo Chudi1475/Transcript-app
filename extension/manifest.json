@@ -9,7 +9,10 @@
   ],
   "content_scripts": [
     {
-      "matches": ["https://www.instagram.com/*"],
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*"
+      ],
       "js": ["content.js"],
       "css": ["content.css"],
       "run_at": "document_idle"
