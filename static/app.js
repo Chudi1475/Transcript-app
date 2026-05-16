@@ -16,6 +16,10 @@ const downloadSrtBtn = document.getElementById("downloadSrtBtn");
 const toggleTimestamps = document.getElementById("toggleTimestamps");
 const urlInput = document.getElementById("urlInput");
 const urlBtn = document.getElementById("urlBtn");
+const urlCancelBtn = document.getElementById("urlCancelBtn");
+const urlSection = document.getElementById("urlSection");
+const inputOptions = document.getElementById("inputOptions");
+const linkCardBtn = document.getElementById("linkCardBtn");
 const openClaudeBtn = document.getElementById("openClaudeBtn");
 const summarizeBtn = document.getElementById("summarizeBtn");
 const summaryEl = document.getElementById("summary");
@@ -183,6 +187,18 @@ async function handleUrl() {
 urlBtn.addEventListener("click", handleUrl);
 urlInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") handleUrl();
+});
+
+linkCardBtn.addEventListener("click", () => {
+  hide(inputOptions);
+  show(urlSection);
+  urlInput.focus();
+});
+
+urlCancelBtn.addEventListener("click", () => {
+  hide(urlSection);
+  show(inputOptions);
+  urlInput.value = "";
 });
 
 function renderResult(job) {

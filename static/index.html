@@ -3,36 +3,67 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="theme-color" content="#0a0a14" />
   <title>Transcript</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+  <div class="bg-orbs" aria-hidden="true">
+    <span class="orb orb-1"></span>
+    <span class="orb orb-2"></span>
+    <span class="orb orb-3"></span>
+  </div>
+
   <main>
     <header>
-      <h1>Transcript</h1>
-      <p class="subtitle">Video &amp; audio to text. Runs locally.</p>
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+        <h1>Transcript</h1>
+      </div>
+      <p class="subtitle">Video &amp; audio → text. Runs locally on your GPU.</p>
     </header>
 
-    <section class="upload" id="dropzone">
-      <input type="file" id="fileInput" accept="video/*,audio/*" hidden />
-      <label for="fileInput" class="upload-label">
-        <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-          <polyline points="17 8 12 3 7 8"/>
-          <line x1="12" y1="3" x2="12" y2="15"/>
-        </svg>
-        <span class="primary">Choose a file</span>
-        <span class="secondary">or drag &amp; drop — video or audio</span>
-      </label>
+    <section class="input-options" id="inputOptions">
+      <div class="input-card" id="dropzone">
+        <input type="file" id="fileInput" accept="video/*,audio/*" hidden />
+        <label for="fileInput" class="input-card-inner">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          <span class="primary">Choose a file</span>
+          <span class="secondary">video or audio from your device</span>
+        </label>
+      </div>
+
+      <button type="button" class="input-card" id="linkCardBtn">
+        <span class="input-card-inner">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.72-1.71"/>
+          </svg>
+          <span class="primary">Paste a link</span>
+          <span class="secondary">TikTok, Instagram, YouTube, X…</span>
+        </span>
+      </button>
     </section>
 
-    <div class="divider"><span>or</span></div>
-
-    <section class="url-section">
+    <section class="url-section hidden" id="urlSection">
       <input type="url" id="urlInput" inputmode="url" autocomplete="off" autocapitalize="off"
-             placeholder="Paste a link — TikTok, Instagram, YouTube, X, Reddit…" />
-      <button type="button" id="urlBtn" class="btn">Transcribe link</button>
+             placeholder="Paste a video link here" />
+      <div class="url-actions">
+        <button type="button" id="urlCancelBtn" class="btn btn-ghost">Cancel</button>
+        <button type="button" id="urlBtn" class="btn">Transcribe</button>
+      </div>
     </section>
 
     <section class="options">
