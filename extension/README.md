@@ -19,8 +19,9 @@ python app.py
 3. Click **Load unpacked**.
 4. Select this `extension` folder.
 
-A purple/pink circular button appears in the bottom-right corner of
-instagram.com when you're on a reel page.
+A purple/pink circular button appears on the reel's action sidebar,
+directly above the playback-speed (1x) icon, whenever you're viewing
+a reel.
 
 ## Use
 
