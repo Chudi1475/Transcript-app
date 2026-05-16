@@ -1,0 +1,62 @@
+#rtc-btn {
+  position: fixed !important;
+  bottom: 110px;
+  right: 24px;
+  z-index: 2147483647;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #8b5cf6 0%, #ec4899 100%);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8px 24px rgba(139, 92, 246, 0.45);
+  transition: transform 0.15s ease, box-shadow 0.2s ease, filter 0.2s ease;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#rtc-btn:hover {
+  transform: scale(1.08);
+  box-shadow: 0 12px 30px rgba(139, 92, 246, 0.6);
+  filter: brightness(1.05);
+}
+
+#rtc-btn:active {
+  transform: scale(0.95);
+}
+
+#rtc-btn.busy {
+  animation: rtc-pulse 1.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes rtc-pulse {
+  0%, 100% { box-shadow: 0 8px 24px rgba(139, 92, 246, 0.45); }
+  50%      { box-shadow: 0 8px 32px rgba(236, 72, 153, 0.75); }
+}
+
+#rtc-status {
+  position: fixed !important;
+  bottom: 178px;
+  right: 24px;
+  z-index: 2147483647;
+  background: rgba(20, 20, 30, 0.96);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font: 600 13px -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  max-width: 260px;
+  pointer-events: none;
+}
+
+#rtc-status.error {
+  background: rgba(220, 50, 70, 0.96);
+}
