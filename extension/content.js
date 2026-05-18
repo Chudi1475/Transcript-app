@@ -10,7 +10,35 @@ const ARROW_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 </svg>`;
 
 const LOG = "[reel-to-claude]";
-const SERVER = "http://localhost:8000";
+const LOCAL_SERVER = "http://localhost:8000";
+// Set this after you deploy the cloud version (e.g.
+// "https://transcript-app-cloud.onrender.com"). Leave as "" to disable
+// fallback (extension will just show an error when PC is off).
+const CLOUD_SERVER = "";
+
+const LOCAL_PROBE_TIMEOUT_MS = 1000;
+
+async function localAlive() {
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), LOCAL_PROBE_TIMEOUT_MS);
+    const resp = await fetch(`${LOCAL_SERVER}/healthz`, {
+      method: "GET",
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
+    clearTimeout(timer);
+    return resp.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function pickServer() {
+  if (await localAlive()) return { url: LOCAL_SERVER, mode: "local" };
+  if (CLOUD_SERVER) return { url: CLOUD_SERVER, mode: "cloud" };
+  return null;
+}
 
 function ensureWidget() {
   let widget = document.getElementById("rtc-widget");
@@ -49,7 +77,7 @@ function ensureWidget() {
   return widget;
 }
 
-function handleSubmit(url, widget, input) {
+async function handleSubmit(url, widget, input) {
   url = (url || "").trim();
   if (!url) {
     input.focus();
@@ -61,11 +89,22 @@ function handleSubmit(url, widget, input) {
     return;
   }
 
-  const target = `${SERVER}/?url=${encodeURIComponent(url)}`;
+  showStatus("Checking server…");
+  const server = await pickServer();
+  if (!server) {
+    showStatus("PC is off and no cloud configured.", true);
+    return;
+  }
+
+  const target = `${server.url}/?url=${encodeURIComponent(url)}`;
   window.open(target, "_blank", "noopener");
 
   input.value = "";
-  showStatus("Opened transcript app");
+  showStatus(
+    server.mode === "local"
+      ? "Sending to your PC…"
+      : "PC off — using cloud fallback…"
+  );
   setTimeout(() => {
     hideStatus();
     widget.classList.remove("rtc-open");

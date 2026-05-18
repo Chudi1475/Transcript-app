@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: transcript-app-cloud
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r cloud/requirements.txt
+    startCommand: uvicorn cloud.app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /healthz
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"

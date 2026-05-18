@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
   "name": "Reel to Claude",
-  "version": "0.1.0",
-  "description": "One-click: transcribe the current Instagram reel and send it to Claude.",
+  "version": "0.2.0",
+  "description": "One-click: transcribe the current Instagram reel. Uses your local PC when on, falls back to a cloud server when off.",
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
   "content_scripts": [
     {
       "matches": [

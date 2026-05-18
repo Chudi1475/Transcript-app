@@ -1,8 +1,14 @@
+"""
+Cloud version of transcript-app.
+
+Same API surface as ../app.py, but transcription runs on Groq's
+whisper-large-v3-turbo instead of a local faster-whisper model.
+Designed to run on Render's free tier as a fallback for when the
+local PC is off.
+"""
+
 import os
 import shutil
-import socket
-import sys
-import sysconfig
 import threading
 import uuid
 from datetime import datetime
@@ -12,17 +18,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-if sys.platform == "win32":
-    site_packages = Path(sysconfig.get_paths()["purelib"])
-    for sub in ("nvidia/cublas/bin", "nvidia/cudnn/bin"):
-        dll_dir = site_packages / sub
-        if dll_dir.exists():
-            os.add_dll_directory(str(dll_dir))
-
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from faster_whisper import WhisperModel
+from groq import Groq
 
 import yt_dlp
 
@@ -30,6 +30,10 @@ try:
     from anthropic import Anthropic
 except ImportError:
     Anthropic = None
+
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3-turbo")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 anthropic_client = (
@@ -40,37 +44,24 @@ anthropic_client = (
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "claude-sonnet-4-6")
 
 APP_DIR = Path(__file__).parent
-STATIC_DIR = APP_DIR / "static"
+REPO_DIR = APP_DIR.parent
+STATIC_DIR = REPO_DIR / "static"
 UPLOAD_DIR = APP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "small.en")
-DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
-COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "float16")
-BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
-
-
-def load_model():
-    print(f"Loading Whisper model: {MODEL_NAME} ({DEVICE}, {COMPUTE_TYPE})")
-    try:
-        return WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
-    except Exception as e:
-        if DEVICE != "cpu":
-            print(f"GPU init failed: {e}")
-            print("Falling back to CPU (int8). Set WHISPER_DEVICE=cuda to retry.")
-            return WhisperModel(
-                MODEL_NAME,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=os.cpu_count() or 4,
-            )
-        raise
-
-
-model = load_model()
-print("Model loaded.")
+# 25 MB is Groq's per-file limit for whisper.
+MAX_FILE_BYTES = 25 * 1024 * 1024
 
 app = FastAPI()
+
+# Permissive CORS so the extension (or any page) can probe /healthz
+# from any origin without the browser fussing over preflight.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -93,35 +84,57 @@ def update_job(job_id: str, **fields):
             jobs[job_id].update(fields)
 
 
-def run_transcription(job_id: str, file_path: Path, language: str | None):
+def transcribe_with_groq(job_id: str, file_path: Path, language: str | None):
     try:
-        update_job(job_id, status="transcribing", progress=0.0)
+        if not groq_client:
+            raise RuntimeError("GROQ_API_KEY env var is not set on the server")
 
-        kwargs = {"beam_size": BEAM_SIZE, "vad_filter": True}
-        if language and language != "auto":
-            kwargs["language"] = language
+        update_job(job_id, status="transcribing", progress=0.6)
 
-        segments_iter, info = model.transcribe(str(file_path), **kwargs)
-        duration = info.duration or 1.0
+        with file_path.open("rb") as f:
+            kwargs = {
+                "file": (file_path.name, f.read()),
+                "model": GROQ_MODEL,
+                "response_format": "verbose_json",
+                "temperature": 0.0,
+            }
+            if language and language != "auto":
+                kwargs["language"] = language
+            result = groq_client.audio.transcriptions.create(**kwargs)
 
-        segs = []
-        text_parts = []
-        for seg in segments_iter:
-            segs.append({"start": seg.start, "end": seg.end, "text": seg.text})
-            text_parts.append(seg.text)
-            update_job(job_id, progress=min(seg.end / duration, 0.99))
+        # The Groq SDK returns a pydantic-ish object whose `segments` is a
+        # list of dicts (start/end/text plus extras we don't need).
+        raw_segments = getattr(result, "segments", None) or []
+        segments = []
+        for seg in raw_segments:
+            if isinstance(seg, dict):
+                segments.append(
+                    {
+                        "start": seg.get("start"),
+                        "end": seg.get("end"),
+                        "text": seg.get("text", ""),
+                    }
+                )
+            else:
+                segments.append(
+                    {
+                        "start": getattr(seg, "start", None),
+                        "end": getattr(seg, "end", None),
+                        "text": getattr(seg, "text", ""),
+                    }
+                )
 
         update_job(
             job_id,
             status="done",
             progress=1.0,
-            text="".join(text_parts).strip(),
-            segments=segs,
-            language=info.language,
-            duration=info.duration,
+            text=(result.text or "").strip(),
+            segments=segments,
+            language=getattr(result, "language", language or "auto"),
+            duration=getattr(result, "duration", None),
         )
     except Exception as e:
-        update_job(job_id, status="error", error=str(e))
+        update_job(job_id, status="error", error=f"Groq error: {e}")
     finally:
         try:
             file_path.unlink(missing_ok=True)
@@ -138,7 +151,8 @@ def run_url_job(job_id: str, url: str, language: str | None):
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 done = d.get("downloaded_bytes", 0)
                 if total:
-                    update_job(job_id, progress=min(done / total, 0.99))
+                    # Download is roughly first half of work; transcribe is fast.
+                    update_job(job_id, progress=min(done / total * 0.5, 0.49))
 
         ydl_opts = {
             "format": "bestaudio/best",
@@ -160,7 +174,16 @@ def run_url_job(job_id: str, url: str, language: str | None):
                     if job_id in jobs:
                         jobs[job_id]["source_title"] = title
 
-        run_transcription(job_id, file_path, language)
+        if file_path.stat().st_size > MAX_FILE_BYTES:
+            update_job(
+                job_id,
+                status="error",
+                error="File >25MB — too large for cloud transcription. Run on your local PC.",
+            )
+            file_path.unlink(missing_ok=True)
+            return
+
+        transcribe_with_groq(job_id, file_path, language)
     except yt_dlp.utils.DownloadError as e:
         msg = str(e)
         if "login" in msg.lower() or "private" in msg.lower():
@@ -208,6 +231,10 @@ def transcribe(file: UploadFile = File(...), language: str = "auto"):
     with saved_path.open("wb") as out:
         shutil.copyfileobj(file.file, out, length=1024 * 1024)
 
+    if saved_path.stat().st_size > MAX_FILE_BYTES:
+        saved_path.unlink(missing_ok=True)
+        raise HTTPException(413, "File >25MB — too large for cloud. Run on your local PC.")
+
     with jobs_lock:
         jobs[job_id] = {
             "status": "queued",
@@ -217,7 +244,7 @@ def transcribe(file: UploadFile = File(...), language: str = "auto"):
         }
 
     threading.Thread(
-        target=run_transcription, args=(job_id, saved_path, language), daemon=True
+        target=transcribe_with_groq, args=(job_id, saved_path, language), daemon=True
     ).start()
     return {"job_id": job_id}
 
@@ -233,7 +260,7 @@ def status(job_id: str):
 
 @app.get("/config")
 def config():
-    return {"ai_enabled": anthropic_client is not None}
+    return {"ai_enabled": anthropic_client is not None, "cloud": True}
 
 
 @app.post("/summarize")
@@ -266,7 +293,7 @@ def summarize(payload: dict = Body(...)):
 
 @app.get("/healthz")
 def healthz():
-    return {"ok": True, "cloud": False}
+    return {"ok": True, "cloud": True}
 
 
 @app.get("/")
@@ -277,25 +304,8 @@ def root():
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
-def get_lan_ip() -> str:
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
-
-
 if __name__ == "__main__":
     import uvicorn
 
     port = int(os.environ.get("PORT", "8000"))
-    lan_ip = get_lan_ip()
-    print()
-    print("Server running:")
-    print(f"  This computer:  http://localhost:{port}")
-    print(f"  Your phone:     http://{lan_ip}:{port}  (same Wi-Fi)")
-    print()
     uvicorn.run(app, host="0.0.0.0", port=port)
