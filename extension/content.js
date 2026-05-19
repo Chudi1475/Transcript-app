@@ -14,7 +14,7 @@ const LOCAL_SERVER = "http://localhost:8000";
 // Set this after you deploy the cloud version (e.g.
 // "https://transcript-app-cloud.onrender.com"). Leave as "" to disable
 // fallback (extension will just show an error when PC is off).
-const CLOUD_SERVER = "";
+const CLOUD_SERVER = "https://transcript-app-cloud.onrender.com";
 
 const LOCAL_PROBE_TIMEOUT_MS = 1000;
 
