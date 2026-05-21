@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Reel to Claude",
-  "version": "0.2.0",
-  "description": "One-click: transcribe the current Instagram reel. Uses your local PC when on, falls back to a cloud server when off.",
+  "version": "0.3.0",
+  "description": "One-click: transcribe videos from Instagram, TikTok, YouTube, X/Twitter, Facebook, Reddit, Threads, Snapchat, Twitch, and more. Local PC when on, cloud fallback when off.",
   "host_permissions": [
     "http://localhost:8000/*"
   ],
@@ -10,7 +10,36 @@
     {
       "matches": [
         "https://www.instagram.com/*",
-        "https://instagram.com/*"
+        "https://instagram.com/*",
+        "https://twitter.com/*",
+        "https://www.twitter.com/*",
+        "https://x.com/*",
+        "https://www.x.com/*",
+        "https://www.tiktok.com/*",
+        "https://tiktok.com/*",
+        "https://m.tiktok.com/*",
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://m.youtube.com/*",
+        "https://youtu.be/*",
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://m.facebook.com/*",
+        "https://fb.watch/*",
+        "https://www.reddit.com/*",
+        "https://reddit.com/*",
+        "https://old.reddit.com/*",
+        "https://new.reddit.com/*",
+        "https://www.threads.net/*",
+        "https://threads.net/*",
+        "https://www.threads.com/*",
+        "https://threads.com/*",
+        "https://www.snapchat.com/*",
+        "https://snapchat.com/*",
+        "https://www.twitch.tv/*",
+        "https://twitch.tv/*",
+        "https://clips.twitch.tv/*",
+        "https://vm.tiktok.com/*"
       ],
       "js": ["content.js"],
       "css": ["content.css"],

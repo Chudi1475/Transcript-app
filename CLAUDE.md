@@ -1,13 +1,15 @@
 # transcript-app
 
-One-click transcription tool for Instagram reels (and anything else yt-dlp can
-download). Local-first with a cloud fallback. Triggered from a Brave/Chrome
-extension on desktop or an iOS Shortcut on iPhone.
+One-click transcription tool for short videos from social media — Instagram,
+TikTok, YouTube, X/Twitter, Facebook, Reddit, Threads, Snapchat, Twitch, and
+anywhere else `yt-dlp` can reach. Local-first with a cloud fallback.
+Triggered from a Brave/Chrome extension on desktop or an iOS Shortcut on
+iPhone.
 
 ## Architecture
 
 ```
-              ┌─ Brave extension (Instagram) ─┐
+              ┌─ Brave extension (social media)┐
               │                               │
               │   probe localhost:8000/healthz │
               │   (1s timeout)                 │
@@ -130,9 +132,12 @@ are fast.
    ```
 3. Reload the extension card after edits.
 
-The content script injects a gradient hover-pill at top-right of any
-`instagram.com` page. Paste a reel URL → hits `/healthz` on localhost with a
-1s timeout → opens local if alive, cloud otherwise.
+The content script injects a gradient hover-pill at top-right of supported
+social-media pages (Instagram, TikTok, YouTube, X, Facebook, Reddit, Threads,
+Snapchat, Twitch — full list in `extension/manifest.json` → `matches`). Paste
+a video URL → hits `/healthz` on localhost with a 1s timeout → opens local if
+alive, cloud otherwise. To add another site, append its origin pattern to the
+`matches` array and reload the extension.
 
 ## iPhone setup
 
