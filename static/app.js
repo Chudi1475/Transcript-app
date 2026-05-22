@@ -249,16 +249,55 @@ function currentOutputText() {
   return currentText;
 }
 
+// Captured once at load so retries always reset to the original label,
+// no matter how many times we've stomped on it with "Copied!" or "Copy failed".
+const COPY_BTN_DEFAULT_TEXT = copyBtn.textContent;
+
+// Robust copy: try execCommand first (synchronous, works in non-secure
+// contexts like http://192.168.x.x and on iOS Safari), fall back to the
+// modern async clipboard API. This makes "Copy failed" rare.
+function copyTextRobust(text) {
+  // 1) Synchronous execCommand path — needs to run inside the click handler's
+  //    user-gesture window. Try first because it's the broadest-compat option.
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    // Off-screen + readonly so iOS doesn't zoom or show the keyboard.
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "0";
+    ta.style.left = "-9999px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (ok) return Promise.resolve(true);
+  } catch {
+    /* fall through */
+  }
+  // 2) Modern async path — works in secure contexts (https, localhost).
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false
+    );
+  }
+  return Promise.resolve(false);
+}
+
 copyBtn.addEventListener("click", async () => {
   const text = currentOutputText();
-  try {
-    await navigator.clipboard.writeText(text);
-    const orig = copyBtn.textContent;
-    copyBtn.textContent = "Copied!";
-    setTimeout(() => (copyBtn.textContent = orig), 1500);
-  } catch {
-    copyBtn.textContent = "Copy failed";
-  }
+  if (!text) return;
+  const ok = await copyTextRobust(text);
+  copyBtn.textContent = ok ? "Copied!" : "Copy failed — tap to retry";
+  // Always reset, so retry is one tap away even after a failure.
+  clearTimeout(copyBtn._resetTimer);
+  copyBtn._resetTimer = setTimeout(() => {
+    copyBtn.textContent = COPY_BTN_DEFAULT_TEXT;
+  }, ok ? 1500 : 2200);
 });
 
 function triggerDownload(text, ext, mime) {
@@ -332,11 +371,14 @@ function tryOpenClaudeApp() {
   }, 1500);
 }
 
-openClaudeBtn.addEventListener("click", (e) => {
+openClaudeBtn.addEventListener("click", async (e) => {
   const text = currentOutputText();
   const prefill = `Here's a transcript I want to discuss:\n\n${text}`;
-  navigator.clipboard.writeText(prefill).catch(() => {});
-  showToast("Transcript copied — paste it in Claude");
+  // Fire-and-forget, but use the robust copier so LAN IP / mobile still works.
+  const copied = await copyTextRobust(prefill);
+  showToast(copied
+    ? "Transcript copied — paste it in Claude"
+    : "Open Claude, then long-press the input and paste manually");
 
   if (isMobileDevice()) {
     e.preventDefault();
