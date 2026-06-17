@@ -1,0 +1,27 @@
+name: keep-alive
+
+# Pings the Render free-tier dyno so it never idles into the ~30s cold start.
+# Free web services sleep after 15 min of no traffic, so we knock every ~10 min.
+# Note: GitHub's scheduled runs are best-effort and can lag a few minutes under
+# load, and the workflow auto-disables after 60 days of no repo commits. For a
+# rock-solid keep-alive, also point UptimeRobot (free, 5-min) at the same URL.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: ping render /healthz
+        run: |
+          URL="https://transcript-app-cloud.onrender.com/healthz"
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 "$URL" || true)
+            echo "attempt $i -> HTTP $code"
+            [ "$code" = "200" ] && exit 0
+            sleep 20
+          done
+          echo "healthz never returned 200"; exit 1

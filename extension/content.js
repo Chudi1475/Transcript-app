@@ -16,7 +16,16 @@ const LOCAL_SERVER = "http://localhost:8000";
 // fallback (extension will just show an error when PC is off).
 const CLOUD_SERVER = "https://transcript-app-cloud.onrender.com";
 
-const LOCAL_PROBE_TIMEOUT_MS = 1000;
+const LOCAL_PROBE_TIMEOUT_MS = 600;
+
+// Wake the sleeping Render dyno the instant the user shows intent (focuses the
+// box) so it's warm by the time they hit go, instead of cold-starting ~30s.
+let cloudWarmed = false;
+function prewarmCloud() {
+  if (cloudWarmed || !CLOUD_SERVER) return;
+  cloudWarmed = true;
+  fetch(`${CLOUD_SERVER}/healthz`, { method: "GET", cache: "no-store" }).catch(() => {});
+}
 
 async function localAlive() {
   try {
@@ -70,6 +79,7 @@ function ensureWidget() {
   });
   input.addEventListener("focus", () => {
     widget.classList.add("rtc-open");
+    prewarmCloud();
     setTimeout(() => input.select(), 0);
   });
 

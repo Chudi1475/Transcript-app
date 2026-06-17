@@ -33,7 +33,9 @@ except ImportError:
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3-turbo")
+# large-v3 (not -turbo) for max accuracy. Cloud's slow part is the cold start,
+# not the model, so the small speed cost over turbo is worth the better words.
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
 anthropic_client = (

@@ -21,8 +21,8 @@ iPhone.
               ┌──────────────┐  ┌────────────────────────────────────┐
               │ LOCAL app.py │  │ CLOUD cloud/app.py (Render free)   │
               │ FastAPI      │  │ FastAPI                            │
-              │ faster-whisper│ │ Groq whisper-large-v3-turbo        │
-              │ small.en CUDA│  │                                    │
+              │ faster-whisper│ │ Groq whisper-large-v3 model        │
+              │ large-v3 CUDA│  │                                    │
               └──────┬───────┘  └──────────┬─────────────────────────┘
                      │                     │
                      │  serves /static/    │
@@ -153,8 +153,8 @@ iPhone always hits cloud. LAN detection is doable (try `192.168.4.38:8000/health
 ## Tech stack
 
 - Python 3.11, FastAPI, uvicorn
-- **Local transcription:** `faster-whisper` (`small.en`, CUDA, `float16`, beam 5)
-- **Cloud transcription:** Groq `whisper-large-v3-turbo` (25MB per-file limit)
+- **Local transcription:** `faster-whisper` (`large-v3`, CUDA, `int8_float16`, beam 5, **sequential**, sensitive VAD). OOM-safe load ladder falls back `large-v3 int8` → `distil-large-v3` → `small.en` → CPU so it always starts. Knobs: `WHISPER_MODEL`, `WHISPER_BEAM_SIZE`, `WHISPER_VAD_THRESHOLD` (default 0.2), and `WHISPER_BATCHED=1` (+ `WHISPER_BATCH_SIZE`) to trade segment granularity for speed on long files.
+- **Cloud transcription:** Groq `whisper-large-v3` (25MB per-file limit; `GROQ_MODEL` overrides — was `-turbo`, now full large-v3 for accuracy)
 - `yt-dlp` for video URL → audio download (`bestaudio/best`, no ffmpeg required for IG reels)
 - Anthropic SDK with `claude-sonnet-4-6` for `/summarize`
 - Vanilla JS frontend, no bundler, no framework
@@ -165,7 +165,8 @@ iPhone always hits cloud. LAN detection is doable (try `192.168.4.38:8000/health
 - **`ANTHROPIC_API_KEY` is separate from Claude Pro.** Pro subscription doesn't grant API access — you'd need a separate console.anthropic.com account with credits. The **Ask Claude** button works without it (just copies the transcript and opens claude.ai); only **Summarize** needs it.
 - **Groq 25MB cap.** Long videos (>~25 min) won't go through cloud. Use local for those.
 - **CUDA DLL dance.** Top of `app.py` adds `nvidia/cublas/bin` and `nvidia/cudnn/bin` to the DLL search path on Windows. If torch/whisper deps are upgraded or the GPU swapped, that block may need adjustment.
-- **Render cold start.** First request after 15min idle waits ~30s for the dyno to wake. Subsequent requests are fast until idle again.
+- **Render cold start.** Free dynos sleep after 15min idle; the first hit then waits ~30s. Mitigated two ways now: a GitHub Actions keep-alive (`.github/workflows/keep-alive.yml`) pings `/healthz` every ~10min, and the extension pre-warms the cloud the moment its input is focused. GH cron is best-effort and can lag a few minutes — point **UptimeRobot** (free, 5min) at `https://transcript-app-cloud.onrender.com/healthz` for a bulletproof keep-warm.
+- **4GB GPU, shared.** `large-v3` int8_float16 peaks ~2.6GB while transcribing; it loads at startup (when VRAM is free) and stays resident. Heavy concurrent GPU use (a game) can starve it mid-job — set `WHISPER_MODEL=distil-large-v3` or `small.en` if that happens. Transcription is serialized behind a lock so two jobs can't OOM each other; a batched OOM auto-retries sequentially.
 - **CRLF warnings on commit.** Windows checkout converts LF → CRLF in working tree. Harmless, ignore the git warnings.
 - **Server log:** `server.log` in repo root, gitignored. Tail it if a transcription silently fails.
 

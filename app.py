@@ -22,7 +22,7 @@ if sys.platform == "win32":
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from faster_whisper import WhisperModel
+from faster_whisper import BatchedInferencePipeline, WhisperModel
 
 import yt_dlp
 
@@ -44,31 +44,75 @@ STATIC_DIR = APP_DIR / "static"
 UPLOAD_DIR = APP_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
 
-MODEL_NAME = os.environ.get("WHISPER_MODEL", "small.en")
-DEVICE = os.environ.get("WHISPER_DEVICE", "cuda")
-COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE", "float16")
+# Accuracy first: large-v3 is Whisper's most accurate model. It won't fit in
+# float16 on a small/shared GPU, so we load it int8_float16 (near-identical
+# accuracy at ~half the VRAM) and walk down a fallback ladder if even that
+# can't fit, so the app never fails to start.
+MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3")
+DEVICE = os.environ.get("WHISPER_DEVICE")  # explicit override; else auto-ladder
+COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE")  # explicit override
 BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
+# Sequential decoding is the default: on short clips it catches slightly more
+# words and yields fine-grained segments (clean timestamps/SRT). Batched is
+# faster on long audio but coarsens segments to ~30s chunks and catches a hair
+# less, so it's opt-in via WHISPER_BATCHED=1 (batch size only matters then).
+USE_BATCHED = os.environ.get("WHISPER_BATCHED", "0") == "1"
+BATCH_SIZE = int(os.environ.get("WHISPER_BATCH_SIZE", "8"))
+
+# Sensitive VAD so quiet speech and words at chunk edges still get caught. Lower
+# threshold = more eager to treat audio as speech; padding protects word edges.
+VAD_PARAMS = {
+    "threshold": float(os.environ.get("WHISPER_VAD_THRESHOLD", "0.2")),
+    "min_silence_duration_ms": 500,
+    "speech_pad_ms": 400,
+}
+
+
+def _load_plan():
+    """Ordered (model, device, compute) attempts — first that loads wins."""
+    if DEVICE or COMPUTE_TYPE:
+        dev = DEVICE or "cuda"
+        comp = COMPUTE_TYPE or ("int8_float16" if dev != "cpu" else "int8")
+        plan = [(MODEL_NAME, dev, comp)]
+        if dev != "cpu":
+            plan.append(("small.en", "cpu", "int8"))
+        return plan
+    return [
+        (MODEL_NAME, "cuda", "int8_float16"),
+        (MODEL_NAME, "cuda", "int8"),
+        ("distil-large-v3", "cuda", "int8_float16"),
+        ("small.en", "cuda", "int8_float16"),
+        ("small.en", "cpu", "int8"),
+    ]
 
 
 def load_model():
-    print(f"Loading Whisper model: {MODEL_NAME} ({DEVICE}, {COMPUTE_TYPE})")
-    try:
-        return WhisperModel(MODEL_NAME, device=DEVICE, compute_type=COMPUTE_TYPE)
-    except Exception as e:
-        if DEVICE != "cpu":
-            print(f"GPU init failed: {e}")
-            print("Falling back to CPU (int8). Set WHISPER_DEVICE=cuda to retry.")
-            return WhisperModel(
-                MODEL_NAME,
-                device="cpu",
-                compute_type="int8",
-                cpu_threads=os.cpu_count() or 4,
-            )
-        raise
+    last_err = None
+    for name, device, compute in _load_plan():
+        try:
+            print(f"Loading Whisper model: {name} ({device}, {compute})")
+            kw = {"cpu_threads": os.cpu_count() or 4} if device == "cpu" else {}
+            m = WhisperModel(name, device=device, compute_type=compute, **kw)
+            print(f"Model loaded: {name} ({device}, {compute})")
+            return m, name, device
+        except Exception as e:
+            last_err = e
+            print(f"  load failed for {name} ({device}, {compute}): {e}")
+    raise RuntimeError(f"Could not load any Whisper model. Last error: {last_err}")
 
 
-model = load_model()
-print("Model loaded.")
+model, ACTIVE_MODEL, ACTIVE_DEVICE = load_model()
+# Batched pipeline only when explicitly enabled and on GPU (it costs more RAM
+# and coarsens segments). Off by default — see USE_BATCHED note above.
+batched_model = (
+    BatchedInferencePipeline(model=model)
+    if (USE_BATCHED and ACTIVE_DEVICE != "cpu")
+    else None
+)
+print(f"Active: {ACTIVE_MODEL} on {ACTIVE_DEVICE}, batched={batched_model is not None}")
+
+# One ~4GB GPU: serialize transcription so two jobs can't OOM each other.
+transcribe_lock = threading.Lock()
 
 app = FastAPI()
 
@@ -93,23 +137,53 @@ def update_job(job_id: str, **fields):
             jobs[job_id].update(fields)
 
 
+def _transcribe(file_path: Path, language: str | None, batched: bool):
+    kwargs = {
+        "beam_size": BEAM_SIZE,
+        "vad_filter": True,
+        "vad_parameters": dict(VAD_PARAMS),
+    }
+    if language and language != "auto":
+        kwargs["language"] = language
+    if batched and batched_model is not None:
+        return batched_model.transcribe(str(file_path), batch_size=BATCH_SIZE, **kwargs)
+    return model.transcribe(str(file_path), **kwargs)
+
+
+def _drain(job_id: str, segments_iter, info):
+    duration = info.duration or 1.0
+    segs, text_parts = [], []
+    for seg in segments_iter:
+        segs.append({"start": seg.start, "end": seg.end, "text": seg.text})
+        text_parts.append(seg.text)
+        update_job(job_id, progress=min((seg.end or 0) / duration, 0.99))
+    return segs, text_parts
+
+
+def _is_oom(err: Exception) -> bool:
+    s = str(err).lower()
+    return any(k in s for k in ("out of memory", "cublas", "cudnn", "cuda failed"))
+
+
 def run_transcription(job_id: str, file_path: Path, language: str | None):
     try:
         update_job(job_id, status="transcribing", progress=0.0)
 
-        kwargs = {"beam_size": BEAM_SIZE, "vad_filter": True}
-        if language and language != "auto":
-            kwargs["language"] = language
-
-        segments_iter, info = model.transcribe(str(file_path), **kwargs)
-        duration = info.duration or 1.0
-
-        segs = []
-        text_parts = []
-        for seg in segments_iter:
-            segs.append({"start": seg.start, "end": seg.end, "text": seg.text})
-            text_parts.append(seg.text)
-            update_job(job_id, progress=min(seg.end / duration, 0.99))
+        # Serialize GPU work so concurrent jobs can't OOM the 4GB card. If a
+        # batched run runs out of VRAM, retry once sequentially (lower peak use).
+        with transcribe_lock:
+            use_batched = batched_model is not None
+            try:
+                segments_iter, info = _transcribe(file_path, language, use_batched)
+                segs, text_parts = _drain(job_id, segments_iter, info)
+            except Exception as e:
+                if use_batched and _is_oom(e):
+                    print(f"[{job_id}] batched OOM ({e}); retrying sequentially")
+                    update_job(job_id, status="transcribing", progress=0.0)
+                    segments_iter, info = _transcribe(file_path, language, False)
+                    segs, text_parts = _drain(job_id, segments_iter, info)
+                else:
+                    raise
 
         update_job(
             job_id,
