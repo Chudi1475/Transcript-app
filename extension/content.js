@@ -108,7 +108,13 @@ async function handleSubmit(url, widget, input) {
 
   // YouTube blocks the cloud's datacenter IP, so it only works from your PC's
   // residential IP. If we'd fall back to cloud for a YouTube link, stop and say so.
-  const isYouTube = /https?:\/\/([^/]*\.)?(youtube\.com|youtu\.be)/i.test(url);
+  let isYouTube = false;
+  try {
+    const h = new URL(url).hostname.toLowerCase();
+    isYouTube = ["youtube.com", "youtu.be", "youtube-nocookie.com"].some(
+      (d) => h === d || h.endsWith("." + d)
+    );
+  } catch { /* unparseable URL — treat as non-YouTube */ }
   if (isYouTube && server.mode === "cloud") {
     showStatus("YouTube only works on your PC — open the transcript app there (cloud is IP-blocked by YouTube).", true);
     return;

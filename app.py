@@ -1,9 +1,11 @@
 import os
+import re
 import shutil
 import socket
 import sys
 import sysconfig
 import threading
+import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -195,7 +197,7 @@ def run_transcription(job_id: str, file_path: Path, language: str | None):
             duration=info.duration,
         )
     except Exception as e:
-        update_job(job_id, status="error", error=str(e))
+        update_job(job_id, status="error", error=_safe_err(e))
     finally:
         try:
             file_path.unlink(missing_ok=True)
@@ -203,10 +205,27 @@ def run_transcription(job_id: str, file_path: Path, language: str | None):
             pass
 
 
+def _is_youtube(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    return any(
+        host == d or host.endswith("." + d)
+        for d in ("youtube.com", "youtu.be", "youtube-nocookie.com")
+    )
+
+
+def _safe_err(e) -> str:
+    # Redact userinfo (e.g. a proxy's user:pass@) so a configured YT_PROXY
+    # credential can't leak into job['error'], which /status returns to callers.
+    return re.sub(r"//[^/@\s]+@", "//***@", str(e))
+
+
 def _yt_extra_opts():
-    """Optional cookie/proxy hooks (mainly for YouTube auth). Everything stays
-    off unless the matching env var is set, so default behavior is unchanged.
-    YouTube from this residential IP needs none of this."""
+    """Optional cookie/proxy hooks (YouTube auth only — gated by _is_youtube at
+    the call site since these are GLOBAL yt-dlp opts). Everything stays off
+    unless the matching env var is set, so default behavior is unchanged."""
     extra = {}
     cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
     if cookiefile and Path(cookiefile).exists():
@@ -243,7 +262,8 @@ def run_url_job(job_id: str, url: str, language: str | None):
             "noplaylist": True,
             "socket_timeout": 30,
         }
-        ydl_opts.update(_yt_extra_opts())
+        if _is_youtube(url):  # YT_* opts are global yt-dlp opts; YouTube only
+            ydl_opts.update(_yt_extra_opts())
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -256,14 +276,14 @@ def run_url_job(job_id: str, url: str, language: str | None):
 
         run_transcription(job_id, file_path, language)
     except yt_dlp.utils.DownloadError as e:
-        msg = str(e)
+        msg = _safe_err(e)
         if "login" in msg.lower() or "private" in msg.lower():
             msg = "This video is private or requires login."
         elif "rate" in msg.lower() or "429" in msg:
             msg = "Rate-limited by the site. Try again in a minute."
         update_job(job_id, status="error", error=msg)
     except Exception as e:
-        update_job(job_id, status="error", error=f"Download failed: {e}")
+        update_job(job_id, status="error", error=f"Download failed: {_safe_err(e)}")
 
 
 @app.post("/transcribe-url")
