@@ -203,6 +203,25 @@ def run_transcription(job_id: str, file_path: Path, language: str | None):
             pass
 
 
+def _yt_extra_opts():
+    """Optional cookie/proxy hooks (mainly for YouTube auth). Everything stays
+    off unless the matching env var is set, so default behavior is unchanged.
+    YouTube from this residential IP needs none of this."""
+    extra = {}
+    cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
+    if cookiefile and Path(cookiefile).exists():
+        extra["cookiefile"] = cookiefile
+    browser = os.environ.get("YT_COOKIES_BROWSER", "").strip()
+    if browser and "cookiefile" not in extra:  # never combine the two
+        extra["cookiesfrombrowser"] = (browser,)  # MUST be a tuple, not a string
+    proxy = os.environ.get("YT_PROXY", "").strip()
+    if proxy:
+        extra["proxy"] = proxy
+    if extra:  # cookies/proxy present -> prefer a cookie-compatible YT client
+        extra["extractor_args"] = {"youtube": {"player_client": ["web_safari", "default"]}}
+    return extra
+
+
 def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
@@ -224,6 +243,7 @@ def run_url_job(job_id: str, url: str, language: str | None):
             "noplaylist": True,
             "socket_timeout": 30,
         }
+        ydl_opts.update(_yt_extra_opts())
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)

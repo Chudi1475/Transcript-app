@@ -10,6 +10,7 @@ local PC is off.
 import os
 import shutil
 import threading
+import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -144,6 +145,43 @@ def transcribe_with_groq(job_id: str, file_path: Path, language: str | None):
             pass
 
 
+def _is_youtube(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    return (
+        host.endswith("youtube.com")
+        or host.endswith("youtu.be")
+        or host.endswith("youtube-nocookie.com")
+    )
+
+
+def _yt_creds_configured() -> bool:
+    # On a headless server only a cookies file + proxy can help YouTube; there
+    # is no browser to read cookies from.
+    return bool(
+        os.environ.get("YT_COOKIES_FILE", "").strip()
+        or os.environ.get("YT_PROXY", "").strip()
+    )
+
+
+def _yt_extra_opts():
+    """Optional cookie/proxy hooks. Off unless the env var is set, so default
+    behavior is unchanged. On a datacenter IP YouTube needs cookies + a
+    RESIDENTIAL proxy and still often fails — these are best-effort hooks."""
+    extra = {}
+    cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
+    if cookiefile and Path(cookiefile).exists():
+        extra["cookiefile"] = cookiefile
+    proxy = os.environ.get("YT_PROXY", "").strip()
+    if proxy:
+        extra["proxy"] = proxy
+    if extra:  # cookies/proxy present -> use a cookie-compatible YT client
+        extra["extractor_args"] = {"youtube": {"player_client": ["web_safari", "default"]}}
+    return extra
+
+
 def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
@@ -166,6 +204,7 @@ def run_url_job(job_id: str, url: str, language: str | None):
             "noplaylist": True,
             "socket_timeout": 30,
         }
+        ydl_opts.update(_yt_extra_opts())
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -188,9 +227,15 @@ def run_url_job(job_id: str, url: str, language: str | None):
         transcribe_with_groq(job_id, file_path, language)
     except yt_dlp.utils.DownloadError as e:
         msg = str(e)
-        if "login" in msg.lower() or "private" in msg.lower():
+        ml = msg.lower()
+        if "sign in to confirm" in ml or "not a bot" in ml:
+            msg = (
+                "YouTube blocked our cloud server (bot check). Transcribe YouTube "
+                "on your PC instead — other sites work fine here."
+            )
+        elif "login" in ml or "private" in ml:
             msg = "This video is private or requires login."
-        elif "rate" in msg.lower() or "429" in msg:
+        elif "rate" in ml or "429" in msg:
             msg = "Rate-limited by the site. Try again in a minute."
         update_job(job_id, status="error", error=msg)
     except Exception as e:
@@ -205,6 +250,25 @@ def transcribe_url(payload: dict = Body(...)):
         raise HTTPException(400, "No URL provided")
     if not (url.startswith("http://") or url.startswith("https://")):
         raise HTTPException(400, "URL must start with http:// or https://")
+
+    # YouTube hard-blocks our datacenter IP. Without cookies+proxy configured,
+    # fail fast with a clear message instead of a cryptic bot-check after a wait.
+    if _is_youtube(url) and not _yt_creds_configured():
+        job_id = uuid.uuid4().hex
+        with jobs_lock:
+            jobs[job_id] = {
+                "status": "error",
+                "progress": 0.0,
+                "filename": url,
+                "source_url": url,
+                "created": datetime.utcnow().isoformat(),
+                "error": (
+                    "YouTube blocks transcription from our cloud server's IP. Open "
+                    "the app on your computer (with it running) to do YouTube — "
+                    "TikTok, Instagram, X, Reddit and the rest work fine here."
+                ),
+            }
+        return {"job_id": job_id}
 
     job_id = uuid.uuid4().hex
     with jobs_lock:
