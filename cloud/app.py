@@ -157,34 +157,59 @@ def _is_youtube(url: str) -> bool:
     )
 
 
-def _yt_creds_configured() -> bool:
-    # On a headless server only a cookies file + proxy can help YouTube; there
-    # is no browser to read cookies from.
-    return bool(
-        os.environ.get("YT_COOKIES_FILE", "").strip()
-        or os.environ.get("YT_PROXY", "").strip()
-    )
+def _is_instagram(url: str) -> bool:
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        host = ""
+    return host == "instagram.com" or host.endswith(".instagram.com")
+
+
+def _cookiefile() -> str:
+    """General cookies file (Netscape cookies.txt). yt-dlp scopes cookies by
+    domain, so a single file can safely hold YouTube + Instagram + any other
+    site. New COOKIES_FILE wins; YT_COOKIES_FILE kept for back-compat."""
+    for var in ("COOKIES_FILE", "YT_COOKIES_FILE"):
+        p = os.environ.get(var, "").strip()
+        if p and Path(p).exists():
+            return p
+    return ""
+
+
+def _proxy() -> str:
+    for var in ("PROXY_URL", "YT_PROXY"):
+        p = os.environ.get(var, "").strip()
+        if p:
+            return p
+    return ""
+
+
+def _creds_configured() -> bool:
+    # A cookies file and/or (residential) proxy is the only thing that gets a
+    # headless datacenter server past YouTube/Instagram's IP + login gates.
+    return bool(_cookiefile() or _proxy())
 
 
 def _safe_err(e) -> str:
-    # Redact userinfo (e.g. a proxy's user:pass@) so a configured YT_PROXY
+    # Redact userinfo (e.g. a proxy's user:pass@) so a configured proxy
     # credential can't leak into job['error'], which /status returns to anyone.
     return re.sub(r"//[^/@\s]+@", "//***@", str(e))
 
 
-def _yt_extra_opts():
-    """Optional cookie/proxy hooks (YouTube only — gated by _is_youtube at the
-    call site since these are GLOBAL yt-dlp opts). Off unless the env var is set.
-    On a datacenter IP YouTube needs cookies + a RESIDENTIAL proxy and still
-    often fails — these are best-effort hooks."""
+def _extra_opts(url: str) -> dict:
+    """Cookie/proxy hooks applied to EVERY download (not just YouTube). Cookies
+    are domain-scoped by yt-dlp, so sharing one file across sites is safe — the
+    IG cookies only ever go to instagram.com, the YT ones to youtube.com, etc.
+    YouTube additionally needs a cookie-compatible player client. Off unless the
+    env var is set; on a datacenter IP these are best-effort and can still fail."""
     extra = {}
-    cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
-    if cookiefile and Path(cookiefile).exists():
-        extra["cookiefile"] = cookiefile
-    proxy = os.environ.get("YT_PROXY", "").strip()
-    if proxy:
-        extra["proxy"] = proxy
-    if extra:  # cookies/proxy present -> use a cookie-compatible YT client
+    cf = _cookiefile()
+    if cf:
+        extra["cookiefile"] = cf
+    px = _proxy()
+    if px:
+        extra["proxy"] = px
+    if _is_youtube(url) and (cf or px):
         extra["extractor_args"] = {"youtube": {"player_client": ["web_safari", "default"]}}
     return extra
 
@@ -211,8 +236,7 @@ def run_url_job(job_id: str, url: str, language: str | None):
             "noplaylist": True,
             "socket_timeout": 30,
         }
-        if _is_youtube(url):  # YT_* opts are global yt-dlp opts; YouTube only
-            ydl_opts.update(_yt_extra_opts())
+        ydl_opts.update(_extra_opts(url))  # cookie/proxy hooks (any site), if set
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -236,11 +260,26 @@ def run_url_job(job_id: str, url: str, language: str | None):
     except yt_dlp.utils.DownloadError as e:
         msg = _safe_err(e)
         ml = msg.lower()
+        ig = _is_instagram(url) or "[instagram]" in ml or "empty media response" in ml
         if "sign in to confirm" in ml or "not a bot" in ml:
             msg = (
                 "YouTube blocked our cloud server (bot check). Transcribe YouTube "
                 "on your PC instead — other sites work fine here."
             )
+        elif ig and ("empty media response" in ml or "logged-in" in ml
+                     or "log in" in ml or "cookies" in ml or "rate" in ml):
+            if _cookiefile():
+                msg = (
+                    "Instagram rejected the cloud server even with cookies — they've "
+                    "likely expired or this post needs a fresh login. Refresh the "
+                    "cookies file, or transcribe this reel on your PC."
+                )
+            else:
+                msg = (
+                    "Instagram is blocking our cloud server's IP (it wants a logged-in "
+                    "session). Transcribe this reel on your PC, or add Instagram "
+                    "cookies to the server — see the README."
+                )
         elif "login" in ml or "private" in ml:
             msg = "This video is private or requires login."
         elif "rate" in ml or "429" in msg:
@@ -261,7 +300,7 @@ def transcribe_url(payload: dict = Body(...)):
 
     # YouTube hard-blocks our datacenter IP. Without cookies+proxy configured,
     # fail fast with a clear message instead of a cryptic bot-check after a wait.
-    if _is_youtube(url) and not _yt_creds_configured():
+    if _is_youtube(url) and not _creds_configured():
         job_id = uuid.uuid4().hex
         with jobs_lock:
             jobs[job_id] = {

@@ -2,6 +2,9 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 python-multipart>=0.0.9
 groq>=0.11
-yt-dlp>=2026.03.17
+# nightly build: Instagram/TikTok extractors break often and get patched here
+# first. The direct URL also busts Render's build cache so every deploy pulls
+# the freshest extractor. Swap back to `yt-dlp>=2026.03.17` for stable-only.
+yt-dlp @ https://github.com/yt-dlp/yt-dlp-nightly-builds/releases/latest/download/yt-dlp.tar.gz
 anthropic>=0.40
 python-dotenv>=1.0
