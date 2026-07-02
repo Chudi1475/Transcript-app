@@ -12,7 +12,7 @@ iPhone.
               ┌─ Brave extension (social media)┐
               │                               │
               │   probe localhost:8000/healthz │
-              │   (1s timeout)                 │
+              │   (600ms timeout)              │
               │                               │
               └───── alive? ──────────────────┘
                      │              │
@@ -56,7 +56,7 @@ extension/
   README.md
 start.bat                   # activates venv, runs app.py, logs to server.log
 render.yaml                 # Render Blueprint for cloud deploy
-requirements.txt            # local deps (faster-whisper, torch, etc.)
+requirements.txt            # local deps (faster-whisper, yt-dlp, etc.)
 .env.example                # ANTHROPIC_API_KEY placeholder
 uploads/                    # tmp downloads (gitignored)
 server.log                  # local server log (gitignored)
@@ -135,7 +135,7 @@ are fast.
 The content script injects a gradient hover-pill at top-right of supported
 social-media pages (Instagram, TikTok, YouTube, X, Facebook, Reddit, Threads,
 Snapchat, Twitch — full list in `extension/manifest.json` → `matches`). Paste
-a video URL → hits `/healthz` on localhost with a 1s timeout → opens local if
+a video URL → hits `/healthz` on localhost with a 600ms timeout → opens local if
 alive, cloud otherwise. To add another site, append its origin pattern to the
 `matches` array and reload the extension.
 
@@ -167,7 +167,8 @@ iPhone always hits cloud. LAN detection is doable (try `192.168.4.38:8000/health
 - **YouTube only works locally.** YouTube hard-blocks datacenter IPs (the Render cloud) in 2026 — even cookies + PO-tokens don't reliably beat the IP-range block, and yt-dlp maintainers consider datacenter YouTube out of scope. So YouTube transcription works from your PC (residential IP) but not the cloud. The cloud now fails YouTube URLs fast with a "use your PC" message, and the extension routes YouTube to local only (never cloud). To *attempt* cloud YouTube anyway you'd need a **residential** proxy + throwaway-account cookies; even then it's unreliable.
 - **Instagram from the cloud needs impersonation (and maybe cookies).** The IG extractor requires a TLS-impersonation target — `curl_cffi` in `cloud/requirements.txt` provides it ("no impersonate target is available" means it's missing). Beyond that, IG returns an "empty media response" to Render's datacenter IP unless the request carries a logged-in session — unlike YouTube it's an *auth* gate more than an IP-range block, so session cookies alone usually get public reels through (no residential proxy needed). Without cookies the cloud now fails IG with a friendly "run it on your PC / add cookies" message instead of the raw yt-dlp wall. Local (your PC's residential IP) still works cookieless. To enable cloud IG: export instagram.com cookies to a Netscape `cookies.txt`, add it as a Render **Secret File** (e.g. `/etc/secrets/cookies.txt`), and set `COOKIES_FILE=/etc/secrets/cookies.txt`. Cookies expire — refresh when IG starts failing again. (Heads-up: automated access can get a throwaway IG account flagged; don't use your main account's cookies.)
 - **Auth hooks (both apps, all off by default).** Cookies/proxy now apply to *every* site, not just YouTube — yt-dlp domain-scopes cookies so one file safely serves IG + YT + others. `COOKIES_FILE` (Netscape cookies.txt path; on Render a Secret File at `/etc/secrets/...`) and `PROXY_URL` (proxy URL, residential for YouTube). Old `YT_COOKIES_FILE` / `YT_PROXY` names still work as fallbacks. Local-only: `YT_COOKIES_BROWSER` (e.g. `firefox` — Chromium cookie reads break on Windows since Chrome 127's app-bound encryption). Cloud yt-dlp is pinned to the **nightly** build (see `cloud/requirements.txt`) so extractor breakages get the freshest fix and each deploy busts Render's build cache.
-- **CUDA DLL dance.** Top of `app.py` adds `nvidia/cublas/bin` and `nvidia/cudnn/bin` to the DLL search path on Windows. If torch/whisper deps are upgraded or the GPU swapped, that block may need adjustment.
+- **Cloud abuse brakes.** The Render URL is public (it's in this repo), so the cloud arm has cheap guards: a global 30-jobs/hour rate limit across both `/transcribe*` endpoints (global, not per-IP — Render's proxy hides real IPs and one user never hits it), a 2-worker pool instead of unbounded threads, >25MB downloads/uploads abort early (progress-hook cap + Content-Length middleware + counted upload writes), the jobs dict is pruned to the newest 50 finished entries, and `/summarize` (the only endpoint that spends real money) accepts an optional `x-app-key` shared secret — set `APP_KEY` in the Render dashboard (never in git) to enable it; the frontend prompts once on 401 and remembers the key in localStorage. Local has none of these gates.
+- **CUDA DLL dance.** Top of `app.py` adds `nvidia/cublas/bin` and `nvidia/cudnn/bin` to the DLL search path on Windows. The DLLs come from the `nvidia_cublas_cu12`/`nvidia_cudnn_cu12` pip wheels (there is no torch in this project); if those wheels or faster-whisper are upgraded, or the GPU swapped, that block may need adjustment.
 - **Render cold start.** Free dynos sleep after 15min idle; the first hit then waits ~30s. Mitigated two ways now: a GitHub Actions keep-alive (`.github/workflows/keep-alive.yml`) pings `/healthz` every ~10min, and the extension pre-warms the cloud the moment its input is focused. GH cron is best-effort and can lag a few minutes — point **UptimeRobot** (free, 5min) at `https://transcript-app-cloud.onrender.com/healthz` for a bulletproof keep-warm.
 - **4GB GPU, shared.** `large-v3` int8_float16 peaks ~2.6GB while transcribing; it loads at startup (when VRAM is free) and stays resident. Heavy concurrent GPU use (a game) can starve it mid-job — set `WHISPER_MODEL=distil-large-v3` or `small.en` if that happens. Transcription is serialized behind a lock so two jobs can't OOM each other; a batched OOM auto-retries sequentially.
 - **CRLF warnings on commit.** Windows checkout converts LF → CRLF in working tree. Harmless, ignore the git warnings.

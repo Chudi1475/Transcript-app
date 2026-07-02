@@ -30,6 +30,7 @@ let currentSegments = [];
 let currentText = "";
 let currentFilename = "";
 let showTimestamps = false;
+let serverConfig = { ai_enabled: false, cloud: false };
 
 const show = (el) => el.classList.remove("hidden");
 const hide = (el) => el.classList.add("hidden");
@@ -85,6 +86,11 @@ fileInput.addEventListener("change", () => {
 function handleFile(file) {
   hide(resultEl);
   hide(errorEl);
+  // Cloud (Groq) caps files at 25MB — reject before wasting the whole upload.
+  if (serverConfig.cloud && file.size > 25 * 1024 * 1024) {
+    showError("File >25MB — too large for cloud transcription. Run it on your local PC.");
+    return;
+  }
   currentFilename = file.name;
   fileMeta.textContent = `${file.name} · ${formatBytes(file.size)}`;
   setProgress("Uploading…", 0);
@@ -102,7 +108,10 @@ function handleFile(file) {
   };
   xhr.onload = () => {
     if (xhr.status !== 200) {
-      showError(`Upload failed (${xhr.status})`);
+      // surface the server's friendly message (e.g. the 25MB 413) when present
+      let detail;
+      try { detail = JSON.parse(xhr.responseText).detail; } catch {}
+      showError(typeof detail === "string" && detail ? detail : `Upload failed (${xhr.status})`);
       return;
     }
     try {
@@ -117,13 +126,12 @@ function handleFile(file) {
 }
 
 async function pollStatus(jobId) {
+  let failures = 0; // tolerate transient blips (Wi-Fi hiccup, Render restart)
   while (true) {
     try {
       const res = await fetch(`/status/${jobId}`);
-      if (!res.ok) {
-        showError(`Status check failed (${res.status})`);
-        return;
-      }
+      if (!res.ok) throw new Error(`Status check failed (${res.status})`);
+      failures = 0;
       const job = await res.json();
       const labels = {
         queued: "Queued…",
@@ -142,8 +150,10 @@ async function pollStatus(jobId) {
         return;
       }
     } catch (e) {
-      showError(e.message);
-      return;
+      if (++failures >= 4) {
+        showError(e.message);
+        return;
+      }
     }
     await new Promise((r) => setTimeout(r, 800));
   }
@@ -173,8 +183,10 @@ async function handleUrl() {
       body: JSON.stringify({ url, language: languageSelect.value }),
     });
     if (!res.ok) {
-      const errText = await res.text();
-      showError(`Request failed: ${errText}`);
+      // surface the server's friendly message (e.g. the 429 rate-limit) when present
+      let detail;
+      try { detail = JSON.parse(await res.text()).detail; } catch {}
+      showError(typeof detail === "string" && detail ? detail : `Request failed (${res.status})`);
       return;
     }
     const { job_id } = await res.json();
@@ -396,11 +408,25 @@ summarizeBtn.addEventListener("click", async () => {
   summarizeBtn.textContent = "Thinking…";
 
   try {
-    const res = await fetch("/summarize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: currentText }),
-    });
+    // x-app-key: only enforced when the server has APP_KEY set (cloud); on a
+    // 401 we ask once and remember the key in localStorage.
+    const doFetch = () =>
+      fetch("/summarize", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-app-key": localStorage.getItem("appKey") || "",
+        },
+        body: JSON.stringify({ text: currentText }),
+      });
+    let res = await doFetch();
+    if (res.status === 401) {
+      const key = prompt("This server requires an access key for Summarize:");
+      if (key) {
+        localStorage.setItem("appKey", key.trim());
+        res = await doFetch();
+      }
+    }
     if (!res.ok) {
       const errText = await res.text();
       summaryContent.classList.remove("loading");
@@ -424,6 +450,7 @@ summaryCloseBtn.addEventListener("click", () => hide(summaryEl));
 fetch("/config")
   .then((r) => r.json())
   .then((cfg) => {
+    serverConfig = cfg || serverConfig;
     if (cfg.ai_enabled) summarizeBtn.classList.remove("hidden");
   })
   .catch(() => {});

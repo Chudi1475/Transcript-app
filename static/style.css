@@ -508,6 +508,7 @@ header h1 {
   border-color: rgba(248, 113, 113, 0.35);
   background: rgba(248, 113, 113, 0.06);
   font-size: 0.92rem;
+  word-wrap: break-word; /* raw yt-dlp errors carry long unbroken URLs */
 }
 
 .summary-header {

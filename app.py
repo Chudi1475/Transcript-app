@@ -22,6 +22,7 @@ if sys.platform == "win32":
             os.add_dll_directory(str(dll_dir))
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from faster_whisper import BatchedInferencePipeline, WhisperModel
@@ -117,6 +118,17 @@ print(f"Active: {ACTIVE_MODEL} on {ACTIVE_DEVICE}, batched={batched_model is not
 transcribe_lock = threading.Lock()
 
 app = FastAPI()
+
+# Permissive CORS, same as cloud: the extension's /healthz probe is a fetch
+# from a content script on instagram.com etc., and MV3 content scripts are
+# subject to the page's CORS — without this header the probe fails and the
+# extension routes to cloud even when this PC is up.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -217,26 +229,49 @@ def _is_youtube(url: str) -> bool:
 
 
 def _safe_err(e) -> str:
-    # Redact userinfo (e.g. a proxy's user:pass@) so a configured YT_PROXY
+    # Redact userinfo (e.g. a proxy's user:pass@) so a configured PROXY_URL
     # credential can't leak into job['error'], which /status returns to callers.
     return re.sub(r"//[^/@\s]+@", "//***@", str(e))
 
 
-def _yt_extra_opts():
-    """Optional cookie/proxy hooks (YouTube auth only — gated by _is_youtube at
-    the call site since these are GLOBAL yt-dlp opts). Everything stays off
-    unless the matching env var is set, so default behavior is unchanged."""
+def _cookiefile() -> str:
+    """General cookies file (Netscape cookies.txt), same as cloud. yt-dlp
+    scopes cookies by domain, so one file can safely hold YouTube + Instagram
+    + any other site. New COOKIES_FILE wins; YT_COOKIES_FILE is back-compat."""
+    for var in ("COOKIES_FILE", "YT_COOKIES_FILE"):
+        p = os.environ.get(var, "").strip()
+        if p:
+            if Path(p).exists():
+                return p
+            print(f"WARNING: {var}={p} does not exist; ignoring")
+    return ""
+
+
+def _proxy() -> str:
+    for var in ("PROXY_URL", "YT_PROXY"):
+        p = os.environ.get(var, "").strip()
+        if p:
+            return p
+    return ""
+
+
+def _extra_opts(url: str) -> dict:
+    """Cookie/proxy hooks applied to EVERY download, mirroring cloud. Cookies
+    are domain-scoped by yt-dlp, so sharing one file across sites is safe.
+    Local-only extra: YT_COOKIES_BROWSER reads cookies straight from a browser
+    profile (also domain-scoped). Everything stays off unless the matching env
+    var is set, so default behavior is unchanged."""
     extra = {}
-    cookiefile = os.environ.get("YT_COOKIES_FILE", "").strip()
-    if cookiefile and Path(cookiefile).exists():
-        extra["cookiefile"] = cookiefile
+    cf = _cookiefile()
+    if cf:
+        extra["cookiefile"] = cf
     browser = os.environ.get("YT_COOKIES_BROWSER", "").strip()
     if browser and "cookiefile" not in extra:  # never combine the two
         extra["cookiesfrombrowser"] = (browser,)  # MUST be a tuple, not a string
-    proxy = os.environ.get("YT_PROXY", "").strip()
-    if proxy:
-        extra["proxy"] = proxy
-    if extra:  # cookies/proxy present -> prefer a cookie-compatible YT client
+    px = _proxy()
+    if px:
+        extra["proxy"] = px
+    if _is_youtube(url) and extra:  # auth present -> cookie-compatible YT client
         extra["extractor_args"] = {"youtube": {"player_client": ["web_safari", "default"]}}
     return extra
 
@@ -260,10 +295,11 @@ def run_url_job(job_id: str, url: str, language: str | None):
             "no_warnings": True,
             "noprogress": True,
             "noplaylist": True,
+            "retries": 10,
+            "fragment_retries": 10,
             "socket_timeout": 30,
         }
-        if _is_youtube(url):  # YT_* opts are global yt-dlp opts; YouTube only
-            ydl_opts.update(_yt_extra_opts())
+        ydl_opts.update(_extra_opts(url))  # cookie/proxy hooks (any site), if set
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -340,6 +376,8 @@ def transcribe(file: UploadFile = File(...), language: str = "auto"):
 def status(job_id: str):
     with jobs_lock:
         job = jobs.get(job_id)
+        # copy under the lock: don't serialize a dict a worker is mutating
+        job = dict(job) if job else None
     if not job:
         raise HTTPException(404, "Job not found")
     return job

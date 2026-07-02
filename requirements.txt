@@ -3,5 +3,7 @@ uvicorn[standard]>=0.27
 python-multipart>=0.0.9
 faster-whisper>=1.1.0
 yt-dlp>=2026.03.17
+# TLS impersonation target — newer yt-dlp IG extractors require one
+curl_cffi>=0.10
 anthropic>=0.40
 python-dotenv>=1.0
