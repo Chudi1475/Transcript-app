@@ -87,6 +87,53 @@ def _rate_limit_or_429():
 # 512MB dyno. 2 is plenty for one user; excess jobs just queue.
 executor = ThreadPoolExecutor(max_workers=2)
 
+# ---- self keep-alive --------------------------------------------------------
+# The GitHub Actions cron is *scheduled* every 5 min but in practice GitHub
+# dequeues it every 1.5-2.5 HOURS (shared-runner lag), so the dyno slept and
+# every phone open ate a ~30-60s cold start. Fix: once awake, ping our own
+# PUBLIC url every 10 min — inbound proxy traffic resets Render's idle timer,
+# so we keep ourselves awake. The GH action remains as the morning
+# resurrection knock (a sleeping dyno can't ping itself awake).
+# Awake window mirrors the GH cron (12:00-06:00 UTC = 7am-1am Central) so idle
+# nights don't burn the 750 free instance-hours/month.
+KEEPALIVE_URL = os.environ.get("RENDER_EXTERNAL_URL", "").strip()  # set by Render
+KEEPALIVE_INTERVAL_SEC = int(os.environ.get("KEEPALIVE_INTERVAL_SEC", "600"))
+KEEPALIVE_UTC_HOURS = os.environ.get("KEEPALIVE_UTC_HOURS", "0-6,12-23")
+
+
+def _hour_in_spec(hour: int, spec: str) -> bool:
+    """cron-style hour spec: '0-6,12-23'. Empty spec = always awake."""
+    if not spec.strip():
+        return True
+    for part in spec.split(","):
+        part = part.strip()
+        try:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                if int(a) <= hour <= int(b):
+                    return True
+            elif part and hour == int(part):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _keep_alive_loop():
+    import urllib.request
+    while True:
+        time.sleep(KEEPALIVE_INTERVAL_SEC)
+        if not _hour_in_spec(datetime.utcnow().hour, KEEPALIVE_UTC_HOURS):
+            continue  # quiet hours: let the dyno sleep, save free-tier hours
+        try:
+            urllib.request.urlopen(f"{KEEPALIVE_URL}/healthz", timeout=30).read()
+        except Exception as e:
+            print(f"keep-alive ping failed: {e}")
+
+
+if KEEPALIVE_URL:  # absent locally, so this only runs on Render
+    threading.Thread(target=_keep_alive_loop, daemon=True).start()
+
 app = FastAPI()
 
 # Permissive CORS so the extension (or any page) can probe /healthz

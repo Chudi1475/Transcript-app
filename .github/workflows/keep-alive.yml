@@ -1,10 +1,11 @@
 name: keep-alive
 
-# Pings the Render free-tier dyno so it never idles into the ~30s cold start.
-# Free web services sleep after 15 min of no traffic, so we knock every ~10 min.
-# Note: GitHub's scheduled runs are best-effort and can lag a few minutes under
-# load, and the workflow auto-disables after 60 days of no repo commits. For a
-# rock-solid keep-alive, also point UptimeRobot (free, 5-min) at the same URL.
+# Resurrection knock for the Render free-tier dyno. The app keeps ITSELF awake
+# once running (self-ping thread in cloud/app.py — see "self keep-alive"); this
+# workflow just wakes it back up if it ever sleeps (quiet-hours window, Render
+# maintenance restart). GitHub dequeues */5 crons every 1.5-2.5h in practice,
+# which is fine for that job but useless as the primary keep-warm — that's why
+# the self-ping exists. Auto-disables after 60 days of no repo commits.
 
 on:
   schedule:
