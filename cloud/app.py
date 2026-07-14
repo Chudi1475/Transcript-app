@@ -284,6 +284,50 @@ def _is_instagram(url: str) -> bool:
     return host == "instagram.com" or host.endswith(".instagram.com")
 
 
+# TikTok share links come in three shapes; all three are the same problem —
+# they require a logged-in TikTok session (cookies) to resolve, and headless
+# server-side requests get bounced to https://www.tiktok.com/?_r=1 (landing
+# page). yt-dlp's TikTokVMIE extractor fails those with "Unsupported URL".
+def _tiktok_shortlink_id(url: str) -> str | None:
+    try:
+        p = urllib.parse.urlparse(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+    except Exception:
+        return None
+    if host in ("vm.tiktok.com", "vt.tiktok.com"):
+        m = re.match(r"/(\w+)/?", path)
+        return m.group(1) if m else None
+    if host in ("www.tiktok.com", "tiktok.com"):
+        m = re.match(r"/t/(\w+)/?", path)
+        return m.group(1) if m else None
+    return None
+
+
+def _resolve_tiktok_shortlink(url: str) -> str | None:
+    """Try to unfurl a TikTok share link to its canonical /@user/video/<id>
+    URL. Requires curl_cffi's chrome TLS fingerprint — a plain urllib HEAD
+    just gets 302'd to the landing page. Returns None if the link can't be
+    resolved (dead, region-blocked, or session-gated with no cookies here)."""
+    try:
+        from curl_cffi import requests as _curl
+    except Exception as e:
+        print(f"curl_cffi unavailable, can't resolve tiktok shortlink: {e}")
+        return None
+    try:
+        r = _curl.get(url, impersonate="chrome", allow_redirects=True, timeout=15)
+    except Exception as e:
+        print(f"tiktok shortlink resolve error: {e}")
+        return None
+    final = str(getattr(r, "url", "") or "")
+    # A resolved video URL has /@user/video/<numeric-id>; the landing page
+    # (what TikTok gives us when the session gate blocks resolution) is
+    # tiktok.com/ or tiktok.com/?_r=1 with no video path.
+    if re.search(r"/@[\w.-]+/video/\d+", final):
+        return final
+    return None
+
+
 def _cookiefile() -> str:
     """General cookies file (Netscape cookies.txt). yt-dlp scopes cookies by
     domain, so a single file can safely hold YouTube + Instagram + any other
@@ -343,13 +387,18 @@ class FileTooBig(Exception):
 
 TOO_BIG_MSG = "File >25MB — too large for cloud transcription. Run on your local PC."
 NO_AUDIO_MSG = (
-    "This post has no audio to transcribe — it's a photo/slideshow, the link is "
-    "dead (redirected to a TikTok landing page), or the video is silent."
+    "This post has no audio to transcribe — looks like a photo/slideshow or a silent video."
+)
+TIKTOK_SHORTLINK_MSG = (
+    "TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need "
+    "a logged-in TikTok session to resolve, which the server doesn't have. Open the "
+    "video in the TikTok app, tap Share → Copy Link, then paste the full "
+    "'@user/video/…' URL instead."
 )
 
 # Image extensions yt-dlp can end up with when a share link resolves to a photo
-# post, a deleted-post redirect, or an og:image preview. Anything in this set
-# means Groq will say "no audio track" — bail earlier with a clear message.
+# post or an og:image preview. Anything in this set means Groq will say
+# "no audio track" — bail earlier with a clear message.
 NO_AUDIO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".bmp", ".html", ".htm"}
 
 
@@ -365,6 +414,21 @@ def _cleanup_job_files(job_id: str):
 def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
+
+        # TikTok share links (tiktok.com/t/… , vm/vt.tiktok.com/…) need session
+        # cookies to resolve; without them TikTok 302s to the landing page and
+        # yt-dlp's TikTokVMIE dies with "Unsupported URL". Pre-resolve with a
+        # chrome-fingerprinted request (curl_cffi) so we hand yt-dlp the real
+        # /@user/video/<id> URL when TikTok cooperates, and a targeted error
+        # telling the user how to fix it when TikTok doesn't.
+        if _tiktok_shortlink_id(url):
+            resolved = _resolve_tiktok_shortlink(url)
+            if resolved:
+                print(f"[{job_id}] tiktok shortlink resolved: {url} -> {resolved}")
+                url = resolved
+            else:
+                update_job(job_id, status="error", error=TIKTOK_SHORTLINK_MSG)
+                return
 
         def progress_hook(d):
             done = d.get("downloaded_bytes", 0) or 0
@@ -441,7 +505,12 @@ def run_url_job(job_id: str, url: str, language: str | None):
         ig = _is_instagram(url) or "[instagram]" in ml or "empty media response" in ml
         rate_limited = ("rate limit" in ml or "rate-limit" in ml
                         or "too many requests" in ml or "429" in msg)
-        if "sign in to confirm" in ml or "not a bot" in ml:
+        # Belt & suspenders: if the URL was a TikTok shortlink that somehow
+        # got through pre-resolution and yt-dlp then choked (Unsupported URL
+        # on the landing page, etc.), surface the actionable message.
+        if _tiktok_shortlink_id(url) and ("unsupported url" in ml or "_r=1" in ml):
+            msg = TIKTOK_SHORTLINK_MSG
+        elif "sign in to confirm" in ml or "not a bot" in ml:
             msg = (
                 "YouTube blocked our cloud server (bot check). Transcribe YouTube "
                 "on your PC instead — other sites work fine here."

@@ -228,6 +228,53 @@ def _is_youtube(url: str) -> bool:
     )
 
 
+# TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need
+# a logged-in TikTok session to unfurl; server-side requests get bounced to
+# the landing page and yt-dlp's TikTokVMIE dies with "Unsupported URL".
+def _tiktok_shortlink_id(url: str) -> str | None:
+    try:
+        p = urllib.parse.urlparse(url)
+        host = (p.hostname or "").lower()
+        path = p.path or ""
+    except Exception:
+        return None
+    if host in ("vm.tiktok.com", "vt.tiktok.com"):
+        m = re.match(r"/(\w+)/?", path)
+        return m.group(1) if m else None
+    if host in ("www.tiktok.com", "tiktok.com"):
+        m = re.match(r"/t/(\w+)/?", path)
+        return m.group(1) if m else None
+    return None
+
+
+def _resolve_tiktok_shortlink(url: str) -> str | None:
+    """curl_cffi's chrome TLS fingerprint gets us the redirect chain — a plain
+    urllib request just receives 302→landing. Returns the canonical
+    /@user/video/<id> URL or None if TikTok refuses to resolve it."""
+    try:
+        from curl_cffi import requests as _curl
+    except Exception as e:
+        print(f"curl_cffi unavailable, can't resolve tiktok shortlink: {e}")
+        return None
+    try:
+        r = _curl.get(url, impersonate="chrome", allow_redirects=True, timeout=15)
+    except Exception as e:
+        print(f"tiktok shortlink resolve error: {e}")
+        return None
+    final = str(getattr(r, "url", "") or "")
+    if re.search(r"/@[\w.-]+/video/\d+", final):
+        return final
+    return None
+
+
+TIKTOK_SHORTLINK_MSG = (
+    "TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need "
+    "a logged-in TikTok session to resolve, which the server doesn't have. Open the "
+    "video in the TikTok app, tap Share → Copy Link, then paste the full "
+    "'@user/video/…' URL instead."
+)
+
+
 def _safe_err(e) -> str:
     # Redact userinfo (e.g. a proxy's user:pass@) so a configured PROXY_URL
     # credential can't leak into job['error'], which /status returns to callers.
@@ -280,6 +327,16 @@ def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
 
+        # Pre-resolve TikTok share links; see _resolve_tiktok_shortlink comment.
+        if _tiktok_shortlink_id(url):
+            resolved = _resolve_tiktok_shortlink(url)
+            if resolved:
+                print(f"[{job_id}] tiktok shortlink resolved: {url} -> {resolved}")
+                url = resolved
+            else:
+                update_job(job_id, status="error", error=TIKTOK_SHORTLINK_MSG)
+                return
+
         def progress_hook(d):
             if d.get("status") == "downloading":
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
@@ -316,9 +373,12 @@ def run_url_job(job_id: str, url: str, language: str | None):
         run_transcription(job_id, file_path, language)
     except yt_dlp.utils.DownloadError as e:
         msg = _safe_err(e)
-        if "login" in msg.lower() or "private" in msg.lower():
+        ml = msg.lower()
+        if _tiktok_shortlink_id(url) and ("unsupported url" in ml or "_r=1" in ml):
+            msg = TIKTOK_SHORTLINK_MSG
+        elif "login" in ml or "private" in ml:
             msg = "This video is private or requires login."
-        elif "rate" in msg.lower() or "429" in msg:
+        elif "rate" in ml or "429" in msg:
             msg = "Rate-limited by the site. Try again in a minute."
         update_job(job_id, status="error", error=msg)
     except Exception as e:
