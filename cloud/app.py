@@ -54,6 +54,11 @@ SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "claude-sonnet-4-6")
 # means no gate, so local/dev keeps working key-less.
 APP_KEY = os.environ.get("APP_KEY", "").strip()
 
+# TEMP: gate for the /debug-formats diagnostic endpoint. Hardcoded fallback so
+# it works on Render without setting an env var; the whole endpoint (and this
+# line) gets removed once the TikTok format issue is diagnosed.
+DEBUG_KEY = os.environ.get("DEBUG_KEY", "tt-fmt-probe-9x71").strip()
+
 APP_DIR = Path(__file__).parent
 REPO_DIR = APP_DIR.parent
 STATIC_DIR = REPO_DIR / "static"
@@ -633,6 +638,53 @@ def status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
+
+
+@app.get("/debug-formats")
+def debug_formats(url: str, key: str = ""):
+    # TEMP diagnostic — resolves a URL from Render's IP and dumps the formats
+    # TikTok/etc. actually serve there (which differ from a blocked dev IP).
+    # Gated on DEBUG_KEY so the public URL can't be used to probe arbitrary
+    # sites. Remove after diagnosing.
+    if not DEBUG_KEY or key != DEBUG_KEY:
+        raise HTTPException(404, "Not found")
+    out = {"input_url": url}
+    if _tiktok_shortlink_id(url):
+        resolved = _resolve_tiktok_shortlink(url)
+        out["resolved_url"] = resolved
+        if resolved:
+            url = resolved
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
+            "noplaylist": True, "playlist_items": "1"}
+    opts.update(_extra_opts(url))
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+        if info and info.get("entries"):
+            entries = list(info["entries"] or [])
+            if entries and entries[0]:
+                info = entries[0]
+        out["extractor"] = info.get("extractor")
+        out["title"] = info.get("title")
+        out["is_image_post"] = bool(info.get("_type") == "playlist"
+                                    or info.get("images") or info.get("image"))
+        out["duration"] = info.get("duration")
+        fmts = []
+        for f in (info.get("formats") or []):
+            fmts.append({
+                "format_id": f.get("format_id"),
+                "ext": f.get("ext"),
+                "acodec": f.get("acodec"),
+                "vcodec": f.get("vcodec"),
+                "abr": f.get("abr"),
+                "filesize": f.get("filesize") or f.get("filesize_approx"),
+                "note": f.get("format_note"),
+            })
+        out["formats"] = fmts
+        out["top_level_keys"] = sorted(info.keys())
+    except Exception as e:
+        out["error"] = _safe_err(e)
+    return out
 
 
 @app.get("/config")
