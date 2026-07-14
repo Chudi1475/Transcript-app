@@ -250,7 +250,14 @@ def transcribe_with_groq(job_id: str, file_path: Path, language: str | None):
             duration=getattr(result, "duration", None),
         )
     except Exception as e:
-        update_job(job_id, status="error", error=f"Groq error: {_safe_err(e)}")
+        err = _safe_err(e)
+        # Belt & suspenders: if a muxed container slipped past the format
+        # filter and yt-dlp checks with no audio stream, surface the plain-
+        # English cause instead of Groq's technical wording.
+        if "no audio track" in err.lower():
+            update_job(job_id, status="error", error=NO_AUDIO_MSG)
+        else:
+            update_job(job_id, status="error", error=f"Groq error: {err}")
     finally:
         try:
             file_path.unlink(missing_ok=True)
@@ -335,6 +342,15 @@ class FileTooBig(Exception):
 
 
 TOO_BIG_MSG = "File >25MB — too large for cloud transcription. Run on your local PC."
+NO_AUDIO_MSG = (
+    "This post has no audio to transcribe — it's a photo/slideshow, the link is "
+    "dead (redirected to a TikTok landing page), or the video is silent."
+)
+
+# Image extensions yt-dlp can end up with when a share link resolves to a photo
+# post, a deleted-post redirect, or an og:image preview. Anything in this set
+# means Groq will say "no audio track" — bail earlier with a clear message.
+NO_AUDIO_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".heic", ".heif", ".bmp", ".html", ".htm"}
 
 
 def _cleanup_job_files(job_id: str):
@@ -365,7 +381,9 @@ def run_url_job(job_id: str, url: str, language: str | None):
             # ~64kbps, and half the bitrate = double the duration that fits
             # under Groq's 25MB cap (plus faster download AND upload). The <=?
             # includes formats with unknown abr (IG often doesn't report it).
-            "format": "ba[abr<=?64]/ba/b",
+            # Final fallback pins acodec!=none so a dead share link resolving
+            # to a photo post can't hand Groq an image with no audio track.
+            "format": "ba[abr<=?64]/ba/b[acodec!=none]",
             "outtmpl": str(UPLOAD_DIR / f"{job_id}.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
@@ -401,6 +419,14 @@ def run_url_job(job_id: str, url: str, language: str | None):
 
         if file_path.stat().st_size > MAX_FILE_BYTES:
             update_job(job_id, status="error", error=TOO_BIG_MSG)
+            _cleanup_job_files(job_id)
+            return
+
+        # Photo posts / dead share links can leave yt-dlp with an image or
+        # HTML preview instead of media. Groq would reject it as "no audio
+        # track" — replace that with a message that names the actual cause.
+        if file_path.suffix.lower() in NO_AUDIO_EXTS:
+            update_job(job_id, status="error", error=NO_AUDIO_MSG)
             _cleanup_job_files(job_id)
             return
 

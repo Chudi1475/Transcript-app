@@ -288,7 +288,10 @@ def run_url_job(job_id: str, url: str, language: str | None):
                     update_job(job_id, progress=min(done / total, 0.99))
 
         ydl_opts = {
-            "format": "bestaudio/best",
+            # Pin acodec!=none on the fallback so a dead share link that
+            # resolves to a photo post can't hand whisper an image with no
+            # audio (ffmpeg would just die deeper in the stack otherwise).
+            "format": "bestaudio/best[acodec!=none]",
             "outtmpl": str(UPLOAD_DIR / f"{job_id}.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
