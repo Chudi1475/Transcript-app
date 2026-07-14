@@ -54,11 +54,6 @@ SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "claude-sonnet-4-6")
 # means no gate, so local/dev keeps working key-less.
 APP_KEY = os.environ.get("APP_KEY", "").strip()
 
-# TEMP: gate for the /debug-formats diagnostic endpoint. Hardcoded fallback so
-# it works on Render without setting an env var; the whole endpoint (and this
-# line) gets removed once the TikTok format issue is diagnosed.
-DEBUG_KEY = os.environ.get("DEBUG_KEY", "tt-fmt-probe-9x71").strip()
-
 APP_DIR = Path(__file__).parent
 REPO_DIR = APP_DIR.parent
 STATIC_DIR = REPO_DIR / "static"
@@ -289,48 +284,77 @@ def _is_instagram(url: str) -> bool:
     return host == "instagram.com" or host.endswith(".instagram.com")
 
 
-# TikTok share links come in three shapes; all three are the same problem —
-# they require a logged-in TikTok session (cookies) to resolve, and headless
-# server-side requests get bounced to https://www.tiktok.com/?_r=1 (landing
-# page). yt-dlp's TikTokVMIE extractor fails those with "Unsupported URL".
-def _tiktok_shortlink_id(url: str) -> str | None:
+def _is_tiktok(url: str) -> bool:
     try:
-        p = urllib.parse.urlparse(url)
-        host = (p.hostname or "").lower()
-        path = p.path or ""
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
     except Exception:
-        return None
-    if host in ("vm.tiktok.com", "vt.tiktok.com"):
-        m = re.match(r"/(\w+)/?", path)
-        return m.group(1) if m else None
-    if host in ("www.tiktok.com", "tiktok.com"):
-        m = re.match(r"/t/(\w+)/?", path)
-        return m.group(1) if m else None
-    return None
+        host = ""
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
 
 
-def _resolve_tiktok_shortlink(url: str) -> str | None:
-    """Try to unfurl a TikTok share link to its canonical /@user/video/<id>
-    URL. Requires curl_cffi's chrome TLS fingerprint — a plain urllib HEAD
-    just gets 302'd to the landing page. Returns None if the link can't be
-    resolved (dead, region-blocked, or session-gated with no cookies here)."""
+def _tikwm_media(url: str) -> tuple[str, str | None, bool] | None:
+    """Resolve a TikTok URL to a directly-downloadable, AUDIO-BEARING media URL
+    via tikwm's public API. This is the primary TikTok path because yt-dlp's
+    cookieless *web* extractor (all we get on a datacenter IP) can't resolve
+    share links and returns no audio for photo/slideshow posts. tikwm runs its
+    own logged-in TikTok sessions, so from any IP it returns:
+      - regular video  -> `play`: a no-watermark mp4 WITH the spoken audio
+      - photo/slideshow -> `play`==`music`: the voiceover/sound track (m4a)
+    Returns (media_url, title, is_photo) or None if tikwm can't fetch it (dead,
+    private, region-locked, or the API is down) so the caller can fall back."""
     try:
         from curl_cffi import requests as _curl
     except Exception as e:
-        print(f"curl_cffi unavailable, can't resolve tiktok shortlink: {e}")
+        print(f"curl_cffi unavailable, can't use tikwm: {e}")
         return None
     try:
-        r = _curl.get(url, impersonate="chrome", allow_redirects=True, timeout=15)
+        r = _curl.get("https://www.tikwm.com/api/", params={"url": url},
+                      impersonate="chrome", timeout=20)
+        d = r.json()
     except Exception as e:
-        print(f"tiktok shortlink resolve error: {e}")
+        print(f"tikwm fetch error: {e}")
         return None
-    final = str(getattr(r, "url", "") or "")
-    # A resolved video URL has /@user/video/<numeric-id>; the landing page
-    # (what TikTok gives us when the session gate blocks resolution) is
-    # tiktok.com/ or tiktok.com/?_r=1 with no video path.
-    if re.search(r"/@[\w.-]+/video/\d+", final):
-        return final
-    return None
+    if not isinstance(d, dict) or d.get("code") != 0:
+        print(f"tikwm miss: code={d.get('code') if isinstance(d, dict) else '?'} "
+              f"msg={d.get('msg') if isinstance(d, dict) else d!r}")
+        return None
+    data = d.get("data") or {}
+    is_photo = bool(data.get("images"))
+    # Videos: `play` carries the spoken audio. Photo posts: `play`==`music`
+    # (the sound track), since there's no video. Prefer play, fall back to music.
+    media = data.get("play") or data.get("music") or data.get("wmplay")
+    if not media:
+        return None
+    if media.startswith("/"):  # tikwm sometimes returns a host-relative path
+        media = "https://www.tikwm.com" + media
+    return media, (data.get("title") or None), is_photo
+
+
+def _download_capped(media_url, dest: Path, max_bytes: int, on_progress=None) -> int:
+    """Stream a direct media URL to `dest`, aborting past `max_bytes`. Uses
+    curl_cffi's chrome fingerprint so TikTok's CDN doesn't 403 a bare client."""
+    from curl_cffi import requests as _curl
+    r = _curl.get(media_url, impersonate="chrome", stream=True, timeout=60)
+    try:
+        if getattr(r, "status_code", 0) >= 400:
+            raise RuntimeError(f"CDN returned HTTP {r.status_code}")
+        written = 0
+        with dest.open("wb") as out:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_bytes:
+                    raise FileTooBig()
+                out.write(chunk)
+                if on_progress:
+                    on_progress(written)
+        return written
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
 
 
 def _cookiefile() -> str:
@@ -394,11 +418,9 @@ TOO_BIG_MSG = "File >25MB — too large for cloud transcription. Run on your loc
 NO_AUDIO_MSG = (
     "This post has no audio to transcribe — looks like a photo/slideshow or a silent video."
 )
-TIKTOK_SHORTLINK_MSG = (
-    "TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need "
-    "a logged-in TikTok session to resolve, which the server doesn't have. Open the "
-    "video in the TikTok app, tap Share → Copy Link, then paste the full "
-    "'@user/video/…' URL instead."
+TIKTOK_UNAVAILABLE_MSG = (
+    "Couldn't fetch this TikTok — it may be private, deleted, region-locked, or the "
+    "link has expired. Double-check it opens in a browser, then try again."
 )
 
 # Image extensions yt-dlp can end up with when a share link resolves to a photo
@@ -420,20 +442,46 @@ def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
 
-        # TikTok share links (tiktok.com/t/… , vm/vt.tiktok.com/…) need session
-        # cookies to resolve; without them TikTok 302s to the landing page and
-        # yt-dlp's TikTokVMIE dies with "Unsupported URL". Pre-resolve with a
-        # chrome-fingerprinted request (curl_cffi) so we hand yt-dlp the real
-        # /@user/video/<id> URL when TikTok cooperates, and a targeted error
-        # telling the user how to fix it when TikTok doesn't.
-        if _tiktok_shortlink_id(url):
-            resolved = _resolve_tiktok_shortlink(url)
-            if resolved:
-                print(f"[{job_id}] tiktok shortlink resolved: {url} -> {resolved}")
-                url = resolved
-            else:
-                update_job(job_id, status="error", error=TIKTOK_SHORTLINK_MSG)
+        # --- TikTok: go through tikwm first. yt-dlp's cookieless web extractor
+        # (all we get from a datacenter IP) can't resolve share links and hands
+        # Groq an audioless image for photo/slideshow posts — the "no audio"
+        # bug. tikwm runs its own TikTok sessions, so from any IP it returns a
+        # directly-downloadable, audio-bearing URL for both videos (no-wm mp4
+        # with the spoken track) and photo posts (the voiceover/sound). Falls
+        # through to the yt-dlp path below if tikwm can't fetch it. ---
+        if _is_tiktok(url):
+            media = _tikwm_media(url)
+            if media:
+                media_url, title, is_photo = media
+                print(f"[{job_id}] tikwm ok (photo={is_photo}) for {url}")
+                if title:
+                    with jobs_lock:
+                        if job_id in jobs:
+                            jobs[job_id]["source_title"] = title
+                ext = ".m4a" if is_photo else ".mp4"  # both Groq-accepted
+                file_path = UPLOAD_DIR / f"{job_id}{ext}"
+                try:
+                    _download_capped(
+                        media_url, file_path, MAX_FILE_BYTES,
+                        lambda n: update_job(job_id, progress=min(n / MAX_FILE_BYTES * 0.5, 0.49)),
+                    )
+                except FileTooBig:
+                    _cleanup_job_files(job_id)
+                    update_job(job_id, status="error", error=TOO_BIG_MSG)
+                    return
+                except Exception as e:
+                    _cleanup_job_files(job_id)
+                    update_job(job_id, status="error", error=f"Download failed: {_safe_err(e)}")
+                    return
+                if not file_path.is_file() or file_path.stat().st_size == 0:
+                    _cleanup_job_files(job_id)
+                    update_job(job_id, status="error", error=TIKTOK_UNAVAILABLE_MSG)
+                    return
+                transcribe_with_groq(job_id, file_path, language)
                 return
+            # tikwm couldn't fetch it — fall through to yt-dlp (which may still
+            # work for some links, or produce a precise DownloadError message).
+            print(f"[{job_id}] tikwm miss for {url}; falling back to yt-dlp")
 
         def progress_hook(d):
             done = d.get("downloaded_bytes", 0) or 0
@@ -450,9 +498,7 @@ def run_url_job(job_id: str, url: str, language: str | None):
             # ~64kbps, and half the bitrate = double the duration that fits
             # under Groq's 25MB cap (plus faster download AND upload). The <=?
             # includes formats with unknown abr (IG often doesn't report it).
-            # Final fallback pins acodec!=none so a dead share link resolving
-            # to a photo post can't hand Groq an image with no audio track.
-            "format": "ba[abr<=?64]/ba/b[acodec!=none]",
+            "format": "ba[abr<=?64]/ba/b",
             "outtmpl": str(UPLOAD_DIR / f"{job_id}.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
@@ -510,11 +556,11 @@ def run_url_job(job_id: str, url: str, language: str | None):
         ig = _is_instagram(url) or "[instagram]" in ml or "empty media response" in ml
         rate_limited = ("rate limit" in ml or "rate-limit" in ml
                         or "too many requests" in ml or "429" in msg)
-        # Belt & suspenders: if the URL was a TikTok shortlink that somehow
-        # got through pre-resolution and yt-dlp then choked (Unsupported URL
-        # on the landing page, etc.), surface the actionable message.
-        if _tiktok_shortlink_id(url) and ("unsupported url" in ml or "_r=1" in ml):
-            msg = TIKTOK_SHORTLINK_MSG
+        # TikTok reaches yt-dlp only after tikwm already missed, so a failure
+        # here means the post is genuinely unavailable (private/deleted/region-
+        # locked/expired) — say that, not a raw "Unsupported URL".
+        if _is_tiktok(url):
+            msg = TIKTOK_UNAVAILABLE_MSG
         elif "sign in to confirm" in ml or "not a bot" in ml:
             msg = (
                 "YouTube blocked our cloud server (bot check). Transcribe YouTube "
@@ -638,53 +684,6 @@ def status(job_id: str):
     if not job:
         raise HTTPException(404, "Job not found")
     return job
-
-
-@app.get("/debug-formats")
-def debug_formats(url: str, key: str = ""):
-    # TEMP diagnostic — resolves a URL from Render's IP and dumps the formats
-    # TikTok/etc. actually serve there (which differ from a blocked dev IP).
-    # Gated on DEBUG_KEY so the public URL can't be used to probe arbitrary
-    # sites. Remove after diagnosing.
-    if not DEBUG_KEY or key != DEBUG_KEY:
-        raise HTTPException(404, "Not found")
-    out = {"input_url": url}
-    if _tiktok_shortlink_id(url):
-        resolved = _resolve_tiktok_shortlink(url)
-        out["resolved_url"] = resolved
-        if resolved:
-            url = resolved
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True,
-            "noplaylist": True, "playlist_items": "1"}
-    opts.update(_extra_opts(url))
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-        if info and info.get("entries"):
-            entries = list(info["entries"] or [])
-            if entries and entries[0]:
-                info = entries[0]
-        out["extractor"] = info.get("extractor")
-        out["title"] = info.get("title")
-        out["is_image_post"] = bool(info.get("_type") == "playlist"
-                                    or info.get("images") or info.get("image"))
-        out["duration"] = info.get("duration")
-        fmts = []
-        for f in (info.get("formats") or []):
-            fmts.append({
-                "format_id": f.get("format_id"),
-                "ext": f.get("ext"),
-                "acodec": f.get("acodec"),
-                "vcodec": f.get("vcodec"),
-                "abr": f.get("abr"),
-                "filesize": f.get("filesize") or f.get("filesize_approx"),
-                "note": f.get("format_note"),
-            })
-        out["formats"] = fmts
-        out["top_level_keys"] = sorted(info.keys())
-    except Exception as e:
-        out["error"] = _safe_err(e)
-    return out
 
 
 @app.get("/config")

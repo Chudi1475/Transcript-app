@@ -228,51 +228,81 @@ def _is_youtube(url: str) -> bool:
     )
 
 
-# TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need
-# a logged-in TikTok session to unfurl; server-side requests get bounced to
-# the landing page and yt-dlp's TikTokVMIE dies with "Unsupported URL".
-def _tiktok_shortlink_id(url: str) -> str | None:
+def _is_tiktok(url: str) -> bool:
     try:
-        p = urllib.parse.urlparse(url)
-        host = (p.hostname or "").lower()
-        path = p.path or ""
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
     except Exception:
-        return None
-    if host in ("vm.tiktok.com", "vt.tiktok.com"):
-        m = re.match(r"/(\w+)/?", path)
-        return m.group(1) if m else None
-    if host in ("www.tiktok.com", "tiktok.com"):
-        m = re.match(r"/t/(\w+)/?", path)
-        return m.group(1) if m else None
-    return None
+        host = ""
+    return host == "tiktok.com" or host.endswith(".tiktok.com")
 
 
-def _resolve_tiktok_shortlink(url: str) -> str | None:
-    """curl_cffi's chrome TLS fingerprint gets us the redirect chain — a plain
-    urllib request just receives 302→landing. Returns the canonical
-    /@user/video/<id> URL or None if TikTok refuses to resolve it."""
+# Cap on tikwm direct downloads. Local whisper has no hard file limit like
+# Groq's 25MB, but a cap keeps a runaway download from filling the disk.
+TIKTOK_MAX_BYTES = 500 * 1024 * 1024
+TIKTOK_UNAVAILABLE_MSG = (
+    "Couldn't fetch this TikTok — it may be private, deleted, region-locked, or the "
+    "link has expired. Double-check it opens in a browser, then try again."
+)
+
+
+def _tikwm_media(url: str) -> tuple[str, str | None, bool] | None:
+    """Resolve a TikTok URL to a directly-downloadable, AUDIO-BEARING media URL
+    via tikwm's public API. yt-dlp's cookieless web extractor can't resolve
+    share links and hands whisper an audioless image for photo/slideshow posts;
+    tikwm runs its own TikTok sessions and returns, for any IP:
+      - regular video   -> `play`: no-watermark mp4 WITH the spoken audio
+      - photo/slideshow  -> `play`==`music`: the voiceover/sound track (m4a)
+    Returns (media_url, title, is_photo) or None if tikwm can't fetch it."""
     try:
         from curl_cffi import requests as _curl
     except Exception as e:
-        print(f"curl_cffi unavailable, can't resolve tiktok shortlink: {e}")
+        print(f"curl_cffi unavailable, can't use tikwm: {e}")
         return None
     try:
-        r = _curl.get(url, impersonate="chrome", allow_redirects=True, timeout=15)
+        r = _curl.get("https://www.tikwm.com/api/", params={"url": url},
+                      impersonate="chrome", timeout=20)
+        d = r.json()
     except Exception as e:
-        print(f"tiktok shortlink resolve error: {e}")
+        print(f"tikwm fetch error: {e}")
         return None
-    final = str(getattr(r, "url", "") or "")
-    if re.search(r"/@[\w.-]+/video/\d+", final):
-        return final
-    return None
+    if not isinstance(d, dict) or d.get("code") != 0:
+        print(f"tikwm miss: {d.get('msg') if isinstance(d, dict) else d!r}")
+        return None
+    data = d.get("data") or {}
+    is_photo = bool(data.get("images"))
+    media = data.get("play") or data.get("music") or data.get("wmplay")
+    if not media:
+        return None
+    if media.startswith("/"):
+        media = "https://www.tikwm.com" + media
+    return media, (data.get("title") or None), is_photo
 
 
-TIKTOK_SHORTLINK_MSG = (
-    "TikTok share links (tiktok.com/t/… , vm.tiktok.com/… , vt.tiktok.com/…) need "
-    "a logged-in TikTok session to resolve, which the server doesn't have. Open the "
-    "video in the TikTok app, tap Share → Copy Link, then paste the full "
-    "'@user/video/…' URL instead."
-)
+def _download_capped(media_url, dest: Path, max_bytes: int, on_progress=None) -> int:
+    """Stream a direct media URL to `dest`, aborting past `max_bytes`. curl_cffi's
+    chrome fingerprint keeps TikTok's CDN from 403-ing a bare client."""
+    from curl_cffi import requests as _curl
+    r = _curl.get(media_url, impersonate="chrome", stream=True, timeout=60)
+    try:
+        if getattr(r, "status_code", 0) >= 400:
+            raise RuntimeError(f"CDN returned HTTP {r.status_code}")
+        written = 0
+        with dest.open("wb") as out:
+            for chunk in r.iter_content(chunk_size=1024 * 1024):
+                if not chunk:
+                    continue
+                written += len(chunk)
+                if written > max_bytes:
+                    raise RuntimeError("file exceeds size cap")
+                out.write(chunk)
+                if on_progress:
+                    on_progress(written)
+        return written
+    finally:
+        try:
+            r.close()
+        except Exception:
+            pass
 
 
 def _safe_err(e) -> str:
@@ -327,15 +357,34 @@ def run_url_job(job_id: str, url: str, language: str | None):
     try:
         update_job(job_id, status="downloading", progress=0.0)
 
-        # Pre-resolve TikTok share links; see _resolve_tiktok_shortlink comment.
-        if _tiktok_shortlink_id(url):
-            resolved = _resolve_tiktok_shortlink(url)
-            if resolved:
-                print(f"[{job_id}] tiktok shortlink resolved: {url} -> {resolved}")
-                url = resolved
-            else:
-                update_job(job_id, status="error", error=TIKTOK_SHORTLINK_MSG)
+        # --- TikTok via tikwm first: it resolves share links and returns
+        # audio-bearing media for both videos and photo/slideshow posts, which
+        # yt-dlp's cookieless web extractor can't. Falls through to yt-dlp if
+        # tikwm can't fetch it. ---
+        if _is_tiktok(url):
+            media = _tikwm_media(url)
+            if media:
+                media_url, title, is_photo = media
+                print(f"[{job_id}] tikwm ok (photo={is_photo}) for {url}")
+                if title:
+                    with jobs_lock:
+                        if job_id in jobs:
+                            jobs[job_id]["source_title"] = title
+                ext = ".m4a" if is_photo else ".mp4"
+                file_path = UPLOAD_DIR / f"{job_id}{ext}"
+                try:
+                    _download_capped(media_url, file_path, TIKTOK_MAX_BYTES)
+                except Exception as e:
+                    file_path.unlink(missing_ok=True)
+                    update_job(job_id, status="error", error=f"Download failed: {_safe_err(e)}")
+                    return
+                if not file_path.is_file() or file_path.stat().st_size == 0:
+                    file_path.unlink(missing_ok=True)
+                    update_job(job_id, status="error", error=TIKTOK_UNAVAILABLE_MSG)
+                    return
+                run_transcription(job_id, file_path, language)
                 return
+            print(f"[{job_id}] tikwm miss for {url}; falling back to yt-dlp")
 
         def progress_hook(d):
             if d.get("status") == "downloading":
@@ -345,10 +394,7 @@ def run_url_job(job_id: str, url: str, language: str | None):
                     update_job(job_id, progress=min(done / total, 0.99))
 
         ydl_opts = {
-            # Pin acodec!=none on the fallback so a dead share link that
-            # resolves to a photo post can't hand whisper an image with no
-            # audio (ffmpeg would just die deeper in the stack otherwise).
-            "format": "bestaudio/best[acodec!=none]",
+            "format": "bestaudio/best",
             "outtmpl": str(UPLOAD_DIR / f"{job_id}.%(ext)s"),
             "progress_hooks": [progress_hook],
             "quiet": True,
@@ -374,8 +420,8 @@ def run_url_job(job_id: str, url: str, language: str | None):
     except yt_dlp.utils.DownloadError as e:
         msg = _safe_err(e)
         ml = msg.lower()
-        if _tiktok_shortlink_id(url) and ("unsupported url" in ml or "_r=1" in ml):
-            msg = TIKTOK_SHORTLINK_MSG
+        if _is_tiktok(url):  # reached only after tikwm already missed
+            msg = TIKTOK_UNAVAILABLE_MSG
         elif "login" in ml or "private" in ml:
             msg = "This video is private or requires login."
         elif "rate" in ml or "429" in msg:
