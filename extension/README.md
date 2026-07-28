@@ -33,7 +33,10 @@ in a browser.
 
 The **cloud fallback** is always available at
 `https://transcript-app-cloud.onrender.com` — used automatically when the
-local server doesn't respond within ~1s.
+local server doesn't respond. The alive-check runs through the extension's
+background service worker (`background.js`): browsers treat a page-context
+fetch to localhost as suspect (Brave blocks it silently, Chrome prompts), so
+probing from the content script would always report the PC dead.
 
 ## Install in Brave (or Chrome)
 
@@ -60,5 +63,8 @@ A small gradient circle appears at the top-right of any supported page.
 - **Pill doesn't appear** — reload the extension at `brave://extensions`
   then refresh the page. Open devtools (`F12` → Console) and look for
   `[reel-to-claude]` messages to confirm the script loaded.
+- **Always goes to cloud even though the PC server is running** — the
+  extension was loaded before `background.js` existed. Reload it at
+  `brave://extensions` (the probe relay only exists after a reload).
 - **Want to add another site?** — append its origin pattern to
   `manifest.json` → `content_scripts[0].matches` and reload the extension.

@@ -29,6 +29,7 @@ const summaryCloseBtn = document.getElementById("summaryCloseBtn");
 let currentSegments = [];
 let currentText = "";
 let currentFilename = "";
+let currentSourceUrl = "";
 let showTimestamps = false;
 let serverConfig = { ai_enabled: false, cloud: false };
 
@@ -58,10 +59,60 @@ function setProgress(label, pct) {
   progressBar.style.width = pct + "%";
 }
 
-function showError(msg) {
+function showError(msg, sourceUrl, sourceLang) {
   hide(statusEl);
   show(errorEl);
   errorEl.textContent = "Error: " + msg;
+  // Groq caps cloud files at 25MB, but the PC app has no such limit — when a
+  // job dies on size, offer the local handoff (and take it if the PC answers).
+  if (serverConfig.cloud && />25MB|too large/i.test(String(msg))) {
+    offerLocalRun(sourceUrl, sourceLang);
+  }
+}
+
+const LOCAL_APP = "http://localhost:8000";
+
+async function offerLocalRun(sourceUrl, sourceLang) {
+  if (isMobileDevice()) {
+    // localhost on a phone is the phone — no handoff possible from here.
+    const hint = document.createElement("div");
+    hint.className = "local-fallback";
+    hint.textContent =
+      "Too long for cloud. Open the app on your PC to transcribe it (or use your PC's Wi-Fi address from this phone).";
+    errorEl.appendChild(hint);
+    return;
+  }
+  // carry the language the job was STARTED with (not the live dropdown, which
+  // the user may have re-picked since) — the local page auto-starts from ?url=
+  // before they could correct it
+  const target = sourceUrl
+    ? `${LOCAL_APP}/?url=${encodeURIComponent(sourceUrl)}&language=${encodeURIComponent(sourceLang || "auto")}`
+    : LOCAL_APP;
+  // Manual link first: top-level navigation still works where the alive-probe
+  // fetch below gets blocked (e.g. the browser's local-network permission).
+  const link = document.createElement("a");
+  link.href = target;
+  link.className = "local-fallback";
+  link.textContent = sourceUrl
+    ? "Run it on this PC instead →"
+    : "Open the PC app and drop the file there →";
+  errorEl.appendChild(document.createElement("br"));
+  errorEl.appendChild(link);
+  if (!sourceUrl) return; // a picked file can't ride along on a redirect
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 1500);
+    const resp = await fetch(`${LOCAL_APP}/healthz`, { cache: "no-store", signal: ctrl.signal });
+    clearTimeout(timer);
+    // Only auto-redirect if the user hasn't started a different job while the
+    // probe was in flight — otherwise leave the manual link and stay put.
+    if (resp.ok && currentSourceUrl === sourceUrl) {
+      link.textContent = "PC app is running — sending it there…";
+      window.location.href = target;
+    }
+  } catch {
+    /* PC off or probe blocked — the manual link stays */
+  }
 }
 
 ["dragenter", "dragover"].forEach((e) =>
@@ -92,6 +143,7 @@ function handleFile(file) {
     return;
   }
   currentFilename = file.name;
+  currentSourceUrl = ""; // file job — don't let a stale URL leak into its errors
   fileMeta.textContent = `${file.name} · ${formatBytes(file.size)}`;
   setProgress("Uploading…", 0);
 
@@ -125,7 +177,7 @@ function handleFile(file) {
   xhr.send(form);
 }
 
-async function pollStatus(jobId) {
+async function pollStatus(jobId, sourceUrl, sourceLang) {
   let failures = 0; // tolerate transient blips (Wi-Fi hiccup, Render restart)
   while (true) {
     try {
@@ -146,7 +198,9 @@ async function pollStatus(jobId) {
         renderResult(job);
         return;
       } else if (job.status === "error") {
-        showError(job.error || "Unknown error");
+        // the job's OWN url and language, not the globals — a stale job's
+        // error must never hand off whatever the user started afterwards
+        showError(job.error || "Unknown error", sourceUrl, sourceLang);
         return;
       }
     } catch (e) {
@@ -173,24 +227,26 @@ async function handleUrl() {
   hide(resultEl);
   hide(errorEl);
   currentFilename = url.split("/").filter(Boolean).pop() || "transcript";
+  currentSourceUrl = url;
   fileMeta.textContent = url;
   setProgress("Starting…", 0);
 
+  const language = languageSelect.value; // snapshot: the dropdown may change mid-job
   try {
     const res = await fetch("/transcribe-url", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, language: languageSelect.value }),
+      body: JSON.stringify({ url, language }),
     });
     if (!res.ok) {
       // surface the server's friendly message (e.g. the 429 rate-limit) when present
       let detail;
       try { detail = JSON.parse(await res.text()).detail; } catch {}
-      showError(typeof detail === "string" && detail ? detail : `Request failed (${res.status})`);
+      showError(typeof detail === "string" && detail ? detail : `Request failed (${res.status})`, url, language);
       return;
     }
     const { job_id } = await res.json();
-    pollStatus(job_id);
+    pollStatus(job_id, url, language);
   } catch (e) {
     showError(e.message);
   }
@@ -459,6 +515,10 @@ fetch("/config")
   const params = new URLSearchParams(location.search);
   const autoUrl = params.get("url");
   if (!autoUrl) return;
+  const lang = params.get("language");
+  if (lang && [...languageSelect.options].some((o) => o.value === lang)) {
+    languageSelect.value = lang;
+  }
   hide(inputOptions);
   show(urlSection);
   urlInput.value = autoUrl;

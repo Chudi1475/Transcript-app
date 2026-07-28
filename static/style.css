@@ -511,6 +511,20 @@ header h1 {
   word-wrap: break-word; /* raw yt-dlp errors carry long unbroken URLs */
 }
 
+.error .local-fallback {
+  display: inline-block;
+  margin-top: 10px;
+  color: inherit;
+}
+
+/* only the actual <a> gets link affordances — the mobile hint is a plain div
+   and must not look tappable */
+.error a.local-fallback {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .summary-header {
   display: flex;
   justify-content: space-between;

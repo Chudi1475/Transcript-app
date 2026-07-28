@@ -16,7 +16,8 @@ const LOCAL_SERVER = "http://localhost:8000";
 // fallback (extension will just show an error when PC is off).
 const CLOUD_SERVER = "https://transcript-app-cloud.onrender.com";
 
-const LOCAL_PROBE_TIMEOUT_MS = 600;
+const LOCAL_PROBE_TIMEOUT_MS = 1500;
+const LOCAL_PROBE_ATTEMPTS = 2;
 
 // Wake the sleeping Render dyno the instant the user shows intent (focuses the
 // box) so it's warm by the time they hit go, instead of cold-starting ~30s.
@@ -27,20 +28,59 @@ function prewarmCloud() {
   fetch(`${CLOUD_SERVER}/healthz`, { method: "GET", cache: "no-store" }).catch(() => {});
 }
 
-async function localAlive() {
+// Ask the background service worker to probe. Content-script fetches to
+// localhost count as the PAGE talking to the local network — Brave silently
+// blocks that and Chrome gates it behind a permission prompt, so a direct
+// fetch from here reports the PC dead even when the server is up. The worker
+// fetches as the extension, which host_permissions exempts from both.
+function probeLocalViaBackground() {
+  return new Promise((resolve, reject) => {
+    try {
+      chrome.runtime.sendMessage({ type: "probe-local" }, (resp) => {
+        if (chrome.runtime.lastError || !resp) {
+          reject(new Error(chrome.runtime.lastError?.message || "no response"));
+        } else {
+          resolve(!!resp.ok);
+        }
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+async function probeLocalDirect() {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), LOCAL_PROBE_TIMEOUT_MS);
   try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), LOCAL_PROBE_TIMEOUT_MS);
     const resp = await fetch(`${LOCAL_SERVER}/healthz`, {
       method: "GET",
       cache: "no-store",
       signal: ctrl.signal,
     });
-    clearTimeout(timer);
     return resp.ok;
-  } catch (e) {
-    return false;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function localAlive() {
+  // Two attempts: a busy PC can blow a single probe, and connection-refused
+  // still fails in milliseconds so PC-off stays snappy.
+  for (let attempt = 0; attempt < LOCAL_PROBE_ATTEMPTS; attempt++) {
+    try {
+      if (await probeLocalViaBackground()) return true;
+      continue; // worker answered "down" — a direct fetch won't know better
+    } catch (e) {
+      /* worker unavailable (e.g. mid-update) — fall back to a direct probe */
+    }
+    try {
+      if (await probeLocalDirect()) return true;
+    } catch (e) {
+      /* retry */
+    }
+  }
+  return false;
 }
 
 async function pickServer() {

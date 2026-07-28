@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Reel to Claude",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "One-click: transcribe videos from Instagram, TikTok, YouTube, X/Twitter, Facebook, Reddit, Threads, Snapchat, Twitch, and more. Local PC when on, cloud fallback when off.",
   "host_permissions": [
     "http://localhost:8000/*"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [

@@ -5,6 +5,7 @@ import socket
 import sys
 import sysconfig
 import threading
+import time
 import urllib.parse
 import uuid
 from datetime import datetime
@@ -55,12 +56,21 @@ MODEL_NAME = os.environ.get("WHISPER_MODEL", "large-v3")
 DEVICE = os.environ.get("WHISPER_DEVICE")  # explicit override; else auto-ladder
 COMPUTE_TYPE = os.environ.get("WHISPER_COMPUTE_TYPE")  # explicit override
 BEAM_SIZE = int(os.environ.get("WHISPER_BEAM_SIZE", "5"))
-# Sequential decoding is the default: on short clips it catches slightly more
-# words and yields fine-grained segments (clean timestamps/SRT). Batched is
-# faster on long audio but coarsens segments to ~30s chunks and catches a hair
-# less, so it's opt-in via WHISPER_BATCHED=1 (batch size only matters then).
+# Sequential decoding for short clips: it catches slightly more words and
+# yields fine-grained segments (clean timestamps/SRT). Batched decoding is
+# faster but coarsens segments to ~30s chunks and catches a hair less — it
+# engages automatically for long audio (see LONG_AUDIO_SEC below, where
+# BATCH_SIZE matters), and WHISPER_BATCHED=1 forces it for every job.
 USE_BATCHED = os.environ.get("WHISPER_BATCHED", "0") == "1"
 BATCH_SIZE = int(os.environ.get("WHISPER_BATCH_SIZE", "8"))
+
+# Long uploads: the sequential beam-5 path is accuracy-king but runs near
+# realtime on this GPU — a 30min file takes ~30min. Past this duration the job
+# auto-switches to the batched pipeline at a greedy beam (several times
+# realtime, slightly coarser segments). Short reels/clips keep the
+# max-accuracy path unchanged.
+LONG_AUDIO_SEC = float(os.environ.get("WHISPER_LONG_AUDIO_SEC", "480"))
+FAST_BEAM_SIZE = int(os.environ.get("WHISPER_FAST_BEAM_SIZE", "1"))
 
 # Sensitive VAD so quiet speech and words at chunk edges still get caught. Lower
 # threshold = more eager to treat audio as speech; padding protects word edges.
@@ -105,12 +115,11 @@ def load_model():
 
 
 model, ACTIVE_MODEL, ACTIVE_DEVICE = load_model()
-# Batched pipeline only when explicitly enabled and on GPU (it costs more RAM
-# and coarsens segments). Off by default — see USE_BATCHED note above.
+# Wraps the same weights (no extra VRAM until used). WHISPER_BATCHED=1 forces
+# it for every job; otherwise it kicks in automatically for long audio only
+# (see LONG_AUDIO_SEC) so short clips keep fine-grained segments.
 batched_model = (
-    BatchedInferencePipeline(model=model)
-    if (USE_BATCHED and ACTIVE_DEVICE != "cpu")
-    else None
+    BatchedInferencePipeline(model=model) if ACTIVE_DEVICE != "cpu" else None
 )
 print(f"Active: {ACTIVE_MODEL} on {ACTIVE_DEVICE}, batched={batched_model is not None}")
 
@@ -151,9 +160,11 @@ def update_job(job_id: str, **fields):
             jobs[job_id].update(fields)
 
 
-def _transcribe(file_path: Path, language: str | None, batched: bool):
+def _transcribe(
+    file_path: Path, language: str | None, batched: bool, beam_size: int | None = None
+):
     kwargs = {
-        "beam_size": BEAM_SIZE,
+        "beam_size": beam_size or BEAM_SIZE,
         "vad_filter": True,
         "vad_parameters": dict(VAD_PARAMS),
     }
@@ -179,25 +190,56 @@ def _is_oom(err: Exception) -> bool:
     return any(k in s for k in ("out of memory", "cublas", "cudnn", "cuda failed"))
 
 
+def _media_duration_sec(path: Path) -> float | None:
+    """Container-metadata duration — no decode, cheap enough to run per job.
+    PyAV is already a faster-whisper dependency."""
+    try:
+        import av
+
+        with av.open(str(path)) as container:
+            if container.duration:
+                return container.duration / av.time_base
+            for s in container.streams:
+                if s.duration and s.time_base:
+                    return float(s.duration * s.time_base)
+    except Exception:
+        return None
+    return None
+
+
 def run_transcription(job_id: str, file_path: Path, language: str | None):
     try:
         update_job(job_id, status="transcribing", progress=0.0)
 
+        media_sec = _media_duration_sec(file_path)
+        long_audio = media_sec is not None and media_sec >= LONG_AUDIO_SEC
+
         # Serialize GPU work so concurrent jobs can't OOM the 4GB card. If a
         # batched run runs out of VRAM, retry once sequentially (lower peak use).
         with transcribe_lock:
-            use_batched = batched_model is not None
+            use_batched = batched_model is not None and (USE_BATCHED or long_audio)
+            beam = FAST_BEAM_SIZE if long_audio else None
+            t0 = time.perf_counter()
             try:
-                segments_iter, info = _transcribe(file_path, language, use_batched)
+                segments_iter, info = _transcribe(file_path, language, use_batched, beam)
                 segs, text_parts = _drain(job_id, segments_iter, info)
             except Exception as e:
                 if use_batched and _is_oom(e):
                     print(f"[{job_id}] batched OOM ({e}); retrying sequentially")
                     update_job(job_id, status="transcribing", progress=0.0)
-                    segments_iter, info = _transcribe(file_path, language, False)
+                    use_batched = False
+                    t0 = time.perf_counter()  # time the retry, not the dead attempt
+                    segments_iter, info = _transcribe(file_path, language, False, beam)
                     segs, text_parts = _drain(job_id, segments_iter, info)
                 else:
                     raise
+
+        elapsed = time.perf_counter() - t0
+        speed = (info.duration or 0) / max(elapsed, 0.001)
+        print(
+            f"[{job_id}] {info.duration or 0:.0f}s audio in {elapsed:.0f}s "
+            f"({speed:.1f}x realtime, batched={use_batched}, beam={beam or BEAM_SIZE})"
+        )
 
         update_job(
             job_id,
